@@ -2,209 +2,136 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
-[![Jupyter](https://img.shields.io/badge/Jupyter-Notebook-orange.svg)](https://jupyter.org/)
+[![FastF1](https://img.shields.io/badge/data-FastF1-E10600.svg)](https://github.com/theOehrly/Fast-F1)
 
-An end-to-end **Formula 1 race strategy system** powered by machine learning models trained on real telemetry data from [FastF1](https://github.com/theOehrly/Fast-F1). Four ML models enable six interactive strategy tools for analyzing race tactics, driver behavior, and tactical decisions.
+An end-to-end **Formula 1 race strategy system** built as a teaching portfolio. The project trains a set of **science modules** on real FastF1 telemetry (2022–2025) and applies them through **strategy tools** that answer concrete race questions — *should I pit now? is pole pace real race pace? does this driver eat tyres?*
 
-## 🎯 Overview
+The project is structured as a curriculum: each module teaches one ML/statistics concept (XGBoost regression, classification, unsupervised clustering, Monte Carlo) and each tool demonstrates how the models compose into something useful.
 
-This project combines **data science**, **telemetry analysis**, and **race strategy** to answer critical F1 questions:
-- Should I pit now or stay out?
-- What's the optimal pit window?
-- Does this driving style consume tyres faster?
-- Who gains in which corners?
+---
 
-## 📊 ML Models
+## 📚 Curriculum
 
-| # | Model | Type | Input Features | Output |
-|---|-------|------|-----------------|--------|
-| **1** | Lap Time Predictor | XGBoost Regression | Tyre age, compound, team, track conditions | Lap time delta |
-| **2** | Overtaking Probability | XGBoost Classifier | Gap size, tyre degradation, DRS eligibility | Overtake likelihood |
-| **3** | Driver Style DNA | KMeans Clustering | Throttle map, braking profile, apex speed patterns | Driver fingerprint |
-| **4** | Race Simulator | Monte Carlo | Modules 1 + 2 combined | Race outcome predictions |
+The repository follows a **two-layer structure**:
 
-## 🛠️ Strategy Tools
+- **Science modules** train the underlying models (one notebook per ML concept).
+- **Strategy tools** consume those models to answer real race questions.
 
-Six interactive **Streamlit apps** powered by the models above:
+### Science modules
 
-| Tool | Question Answered | Models | Status |
-|------|-------------------|--------|--------|
-| **Undercut Calculator** | Should I pit now? | 1, 2 | ✅ Ready |
-| **Stint Optimizer** | What's the optimal pit lap? | 1 | ✅ Ready |
-| **Tyre Whisperer** | Does driving style eat tyres? | 1, 3 | ✅ Ready |
-| **Qualy-to-Race Predictor** | Is pole pace real race pace? | 1 | ✅ Ready |
-| **Telemetry Clash** | Who gains where? | 3 | ✅ Ready |
-| **Chaos Alert** | Safety car pit decision engine | 1, OpenF1 API | ✅ Ready |
+| # | Notebook | Concept | Output |
+|---|----------|---------|--------|
+| **0** | [`tyre_degradation.ipynb`](notebooks/tyre_degradation.ipynb) | Exploratory data analysis | Establishes the data cleaning + degradation patterns that justify Module 1 |
+| **1** | [`lap_time_model.ipynb`](notebooks/lap_time_model.ipynb) | XGBoost regression | Predicts `LapDelta` from compound, tyre age, team, conditions |
+| **2** | [`overtaking_model.ipynb`](notebooks/overtaking_model.ipynb) | XGBoost classification | Predicts overtake probability from gap, tyre delta, DRS state |
+| **3** | [`driver_style_fingerprinting.ipynb`](notebooks/driver_style_fingerprinting.ipynb) | Telemetry resampling + KMeans clustering | Driver style signature (6 features → 4 clusters) |
 
-## 📁 Project Structure
+### Strategy tools
 
-```
-f1-data-science/
-├── analysis/
-│   ├── notebooks/                    ← Jupyter notebooks (model training + analysis)
-│   │   ├── lap_time_model.ipynb
-│   │   ├── overtaking_model.ipynb
-│   │   ├── driver_style_fingerprinting.ipynb
-│   │   ├── race_simulator.ipynb
-│   │   └── strategy_tools/           ← Interactive tool notebooks
-│   └── app/                          ← Streamlit applications
-│       ├── undercut_calc.py
-│       ├── stint_optimizer.py
-│       ├── tyre_whisperer.py
-│       ├── qualy_predictor.py
-│       ├── telemetry_clash.py
-│       └── chaos_alert.py
-├── tools/
-│   └── shared.py                     ← Central utilities (shared by all apps)
-├── models/                           ← ML model files (.pkl)
-│   └── README.md                     ← Instructions for model placement
-├── requirements.txt
-├── .gitignore
-└── README.md
-```
+| # | Notebook | Question | Uses | Status |
+|---|----------|----------|------|--------|
+| **1** | [`undercut_calculator.ipynb`](notebooks/undercut_calculator.ipynb) | Will the undercut actually work right now? | M1, M2 | ✅ Complete |
+| **2** | [`stint_optimizer.ipynb`](notebooks/stint_optimizer.ipynb) | What's the optimal pit lap for this stint? | M1 | ✅ Complete |
+| **3** | [`race_simulator.ipynb`](notebooks/race_simulator.ipynb) | How does the race play out lap-by-lap? | M1, M2 | ✅ Complete |
+| **4** | [`qualy_predictor.ipynb`](notebooks/qualy_predictor.ipynb) | Is pole pace real race pace? | M1 | ✅ Complete |
+| **5** | [`what_if_simulator.ipynb`](notebooks/what_if_simulator.ipynb) | Counterfactual race outcomes (different strategy, weather, etc.) | M1, M2 | ✅ Complete |
+| **6** | *Telemetry Clash* | Who gains in which corners? | M3 | 🚧 Next |
+
+---
 
 ## 🚀 Quick Start
 
 ### Prerequisites
 - Python 3.9+
-- Git
-- pip
+- Git, pip
 
-### Installation
+### Install
 
 ```bash
-# Clone the repository
-git clone https://github.com/pdf1802/f1-data-science
+git clone https://github.com/pdf1802/f1-data-science.git
 cd f1-data-science
-
-# Install dependencies
 pip install -r requirements.txt
 ```
 
-### Add Pre-trained Models
+### Run the notebooks
 
-Model files (.pkl) are stored externally (not in Git to avoid large binary files).
+The notebooks are designed to run in **Google Colab** (each one has a Colab badge at the top) but they also run locally in Jupyter. The FastF1 cache is configured to write to Google Drive in Colab — change `CACHE_DIR` if running locally.
 
-1. **Retrieve models** from the project's Google Drive or model registry
-2. **Place them** in the `models/` directory (see `models/README.md` for details)
-3. Run any Streamlit app:
+Recommended order for first-time readers:
 
-```bash
-streamlit run analysis/app/undercut_calc.py
-```
-
-### Train Models from Scratch
-
-Run the notebooks in numerical order:
-
-```bash
-jupyter notebook analysis/notebooks/lap_time_model.ipynb
-jupyter notebook analysis/notebooks/overtaking_model.ipynb
-jupyter notebook analysis/notebooks/driver_style_fingerprinting.ipynb
-jupyter notebook analysis/notebooks/race_simulator.ipynb
-```
-
-## 📈 Data Sources
-
-- **Historical Race Data**: [FastF1](https://github.com/theOehrly/Fast-F1) — fetched live and cached locally
-- **Live Race Data**: [OpenF1 API](https://openf1.org) — free, no authentication required
-- **Telemetry Features**: Throttle maps, braking profiles, apex speeds, GPS coordinates
-
-## 🔄 Workflow
-
-```
-Raw F1 Telemetry (FastF1)
-    ↓
-Feature Engineering (analysis/notebooks)
-    ↓
-ML Models Training (XGBoost, KMeans)
-    ↓
-Model Serialization (.pkl files)
-    ↓
-Streamlit Apps (Real-time strategy tools)
-    ↓
-Race Strategy Decisions
-```
-
-## 💻 Technologies Used
-
-| Component | Technology |
-|-----------|-----------|
-| **Data Processing** | Pandas, NumPy, Polars |
-| **ML Models** | XGBoost, scikit-learn |
-| **Visualization** | Matplotlib, Plotly, Streamlit |
-| **Data Source** | FastF1, OpenF1 API |
-| **Notebooks** | Jupyter |
-| **Environment** | Python 3.9+ |
-
-## 📋 Requirements
-
-See `requirements.txt` for full dependencies:
-
-```
-pandas>=1.5.0
-numpy>=1.23.0
-xgboost>=1.7.0
-scikit-learn>=1.2.0
-fastf1>=3.0.0
-streamlit>=1.20.0
-plotly>=5.0.0
-polars>=0.19.0
-requests>=2.28.0
-```
-
-## 🧪 Testing & Validation
-
-- Models validated on historical F1 seasons (2020–2024)
-- Cross-validation with out-of-sample test sets
-- Performance benchmarks for each tool available in `analysis/notebooks`
-
-## 📝 Usage Examples
-
-### Example 1: Check if undercut is worth it
-
-```bash
-streamlit run analysis/app/undercut_calc.py
-# → Select race, driver, pit gap, tyre compound
-# → Model predicts lap time gain/loss
-```
-
-### Example 2: Analyze driver telemetry patterns
-
-```bash
-jupyter notebook analysis/notebooks/driver_style_fingerprinting.ipynb
-# → Clusters drivers by driving style
-# → Identifies tyre-eating patterns
-```
-
-## 🤝 Contributing
-
-Contributions are welcome! Areas for improvement:
-
-- [ ] Add more regression features (fuel load, ambient temperature)
-- [ ] Expand driver clustering with additional seasons
-- [ ] Real-time live race simulation
-- [ ] API deployment (FastAPI)
-- [ ] Unit tests for model validation
-
-Please open an **Issue** or **Pull Request** to contribute.
-
-## 📜 License
-
-This project is licensed under the **MIT License** — see [LICENSE](LICENSE) file for details.
-
-## ⚖️ Disclaimer
-
-This project is **fan-made and educational**. It is not affiliated with Formula 1, Liberty Media, or any F1 teams. Predictions are for entertainment and learning purposes only and should not be used for actual betting or wagering.
-
-## 🔗 References
-
-- **FastF1**: [theOehrly/Fast-F1](https://github.com/theOehrly/Fast-F1)
-- **OpenF1 API**: [openf1.org](https://openf1.org)
-- **Official F1**: [Formula1.com](https://www.formula1.com)
+1. `tyre_degradation.ipynb` — the EDA that motivates everything else
+2. `lap_time_model.ipynb` — the workhorse model the tools depend on
+3. Any tool notebook — they document how the models compose
 
 ---
 
-**Last Updated**: May 2026 | **Status**: Active Development
+## 📊 Validation highlights
 
-For questions or suggestions, feel free to open an issue! 🏁
+Models are validated on held-out races, not just train/test splits:
+
+- **Module 1** — strategy recommender tested on Miami 2024 Leclerc one-stop. Predicted optimal pit window matches the team's actual decision within 2 laps.
+- **Module 3** — clustering correctly groups HAM + LEC (similar smooth/late-brake style) and isolates the McLaren pair (distinctive aggressive throttle). Documented V1 → V2 iteration after catching a corrupted DRS channel that was driving a spurious 1-driver cluster.
+- **Tool 4** — Bahrain 2023 ranking predicts ALO P1 race pace; ALO finished P3 on the road (VER won via driver extraction above car baseline, which is not a feature in the model — see *Known limitations* below).
+
+---
+
+## ⚠️ Known limitations
+
+This section is intentional. Acknowledging limitations is a feature of the project, not a bug.
+
+- **Car confound (Module 3).** Driver style is extracted from telemetry that is partially shaped by the car. A Ferrari with strong front-end will look "smooth" regardless of who is driving it. Mitigated by clustering on inputs that are largely driver-controlled (throttle smoothness, brake application %), but not eliminated.
+- **Tool 4 underestimates flying-lap pace on fresh Softs.** The model corrects qualifying times for fuel + compound + degradation, so by construction it predicts a degraded race lap, not a push lap. It is a strong *ranking* tool, not a fastest-lap tool.
+- **Compound delta is estimated per team, with a physics clamp.** Negative compound deltas (which are physically implausible) are clamped to zero to prevent corrections from amplifying noise on short stints.
+- **FastF1 DRS channel is unreliable for some teams** (notably McLaren in 2024). Module 3 V2 drops the `drs_usage_pct` feature for this reason.
+- **No `nGear` / `RPM` features yet.** Both flagged as the most valuable telemetry additions for future Module 3 iterations; currently excluded because the sample size is too small and they would likely overfit.
+
+---
+
+## 🛠️ Stack
+
+| Layer | Tools |
+|-------|-------|
+| Data | FastF1 (2022–2025 sessions, cached locally) |
+| ML | XGBoost, scikit-learn (KMeans, StandardScaler, PCA), UMAP |
+| Analysis | pandas, NumPy, scipy.interpolate |
+| Visualisation | Matplotlib, Plotly |
+| Explainability | SHAP |
+
+---
+
+## 📁 Repository structure
+
+```
+f1-data-science/
+├── notebooks/                          ← All science modules + strategy tools
+│   ├── tyre_degradation.ipynb          ← Module 0 (EDA)
+│   ├── lap_time_model.ipynb            ← Module 1
+│   ├── overtaking_model.ipynb          ← Module 2
+│   ├── driver_style_fingerprinting.ipynb  ← Module 3
+│   ├── undercut_calculator.ipynb       ← Tool 1
+│   ├── stint_optimizer.ipynb           ← Tool 2
+│   ├── race_simulator.ipynb            ← Tool 3
+│   ├── qualy_predictor.ipynb           ← Tool 4
+│   └── what_if_simulator.ipynb         ← Tool 5
+├── models/                             ← Trained .pkl artefacts (gitignored)
+├── requirements.txt
+├── LICENSE
+└── README.md
+```
+
+Model artefacts (`.pkl`) are not committed — they are generated by running the module notebooks. Each module notebook ends with a save cell that writes to `models/` (or `/content/drive/MyDrive/f1_models/` in Colab).
+
+---
+
+## 📜 License
+
+MIT — see [LICENSE](LICENSE).
+
+## ⚖️ Disclaimer
+
+Educational and fan-made. Not affiliated with Formula 1, the FIA, or any team. Not for betting.
+
+## 🔗 References
+
+- [FastF1](https://github.com/theOehrly/Fast-F1) — the data layer this entire project depends on
+- [OpenF1 API](https://openf1.org) — live timing data
