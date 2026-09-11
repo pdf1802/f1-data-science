@@ -1,0 +1,37 @@
+# Models — binary files, never commit
+models/*.pkl
+models/*.joblib
+*.pkl
+*.joblib
+
+# FastF1 cache — can be gigabytes
+f1_cache/
+**/f1_cache/
+fastf1_cache/
+
+# Python
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Environment
+.env
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Streamlit secrets
+.streamlit/secrets.toml
