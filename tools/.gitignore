@@ -8,6 +8,7 @@ models/*.joblib
 f1_cache/
 **/f1_cache/
 fastf1_cache/
+cache/
 
 # Python
 __pycache__/
