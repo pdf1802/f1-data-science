@@ -76,13 +76,19 @@ def load_race(year: int, event: str, session_type: str = "R") -> pd.DataFrame:
     if loaded != event:     # the bug that put Austria in the training set
         raise ValueError(f"Asked for '{event}' {year} but FastF1 resolved '{loaded}'")
     s.load(laps=True, telemetry=False, weather=True, messages=False)
-    laps = pd.DataFrame(s.laps).copy()
+    laps = pd.DataFrame(s.laps).copy()        # raises if timing data could not be loaded
+    if laps.empty:
+        raise ValueError("no laps in this session (data missing from cache and download refused?)")
     w = s.laps.get_weather_data().reset_index(drop=True)
     for col in ("TrackTemp", "AirTemp", "Rainfall"):
         laps[col] = w[col].values if col in w else np.nan
     laps["Season"], laps["Race"] = year, event
     laps["TotalLaps"] = int(laps["LapNumber"].max())
     return laps
+
+
+class NoRacesLoaded(RuntimeError):
+    pass
 
 
 def load_races(sessions=SESSIONS, verbose: bool = True):
@@ -96,6 +102,12 @@ def load_races(sessions=SESSIONS, verbose: bool = True):
             failed.append((year, event, str(e)))
             if verbose:
                 print(f"  ❌ {year} {event:<22} {e}")
+    if not frames:
+        raise NoRacesLoaded(
+            "No race could be loaded. FastF1 failed to download or read every session.\n"
+            "  • Since ~15 Oct 2026 livetiming.formula1.com answers 401 to unauthenticated downloads\n"
+            "    (github.com/theOehrly/Fast-F1/issues/978).\n"
+            "  • Point $F1_CACHE_DIR at an existing FastF1 cache and add --offline, or retry later.")
     return pd.concat(frames, ignore_index=True), failed
 
 

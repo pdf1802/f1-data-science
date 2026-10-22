@@ -41,17 +41,27 @@ def main(argv=None):
     ap.add_argument("--quick", action="store_true", help="2 races only — pipeline smoke test, not saved")
     ap.add_argument("--folds", type=int, default=5)
     ap.add_argument("--force", action="store_true", help="save even if a sanity gate fails")
+    ap.add_argument("--offline", action="store_true",
+                    help="never hit the network — build everything from the FastF1 cache "
+                         "(use with $F1_CACHE_DIR when F1's servers refuse downloads)")
     args = ap.parse_args(argv)
 
     import fastf1
     import logging
     logging.getLogger("fastf1").setLevel(logging.WARNING)
-    shared.enable_fastf1_cache()
+    cache = shared.enable_fastf1_cache()
+    if args.offline:
+        fastf1.Cache.offline_mode(True)
+    print(f"FastF1 cache: {cache}{'  (offline mode)' if args.offline else ''}")
     t0 = time.time()
 
-    sessions = [(2023, "Bahrain Grand Prix"), (2024, "British Grand Prix")] if args.quick else training.SESSIONS
+    sessions = [(2023, "Bahrain Grand Prix"), (2024, "Abu Dhabi Grand Prix")] if args.quick else training.SESSIONS
     _hr(f"1/5  Loading {len(sessions)} races")
-    laps, failed = training.load_races(sessions)
+    try:
+        laps, failed = training.load_races(sessions)
+    except training.NoRacesLoaded as e:
+        print(f"\n❌ {e}")
+        return 2
     if failed:
         print(f"\n⚠️  {len(failed)} sessions failed — training continues without them.")
 

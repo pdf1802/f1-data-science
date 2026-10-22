@@ -169,3 +169,9 @@ def test_train_models_cli_end_to_end(laps, tmp_path, monkeypatch):
         assert any(p.name.startswith("backup_") for p in out.iterdir())
     finally:
         shared.reset_models()
+
+
+def test_clear_error_when_no_race_loads(monkeypatch):
+    monkeypatch.setattr(training, "load_race", lambda *a, **k: (_ for _ in ()).throw(ValueError("401")))
+    with pytest.raises(training.NoRacesLoaded, match="401"):
+        training.load_races([(2024, "British Grand Prix")], verbose=False)
