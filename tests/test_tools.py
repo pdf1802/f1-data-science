@@ -133,3 +133,11 @@ def test_what_if_identical_strategy_is_identical(quali):
     g = grid_from_qualifying(quali, 30, "MEDIUM", "HARD", 14)
     w = what_if(g, g.copy(), "C", {"total_laps": 30}, n_sims=100, seed=5)
     assert w["same_pct"] == 100 and w["gain_se"] == 0
+
+
+def test_dnfs_are_excluded_from_race_result():
+    from tools.qualy_predictor import classified_finishers
+    res = pd.DataFrame({"Abbreviation": ["HAM", "VER", "RUS"],
+                        "ClassifiedPosition": ["1", "2", "R"], "Position": [1.0, 2.0, 19.0]})
+    out = classified_finishers(res)
+    assert out.to_dict() == {"HAM": 1, "VER": 2}

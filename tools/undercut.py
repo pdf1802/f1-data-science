@@ -153,6 +153,7 @@ def undercut_analysis(chaser: DriverState, leader: DriverState, current_gap: flo
     return {
         "verdict": "BOX BOX" if (cond_gap and cond_prob) else "STAY OUT",
         "confidence": round(avg_prob, 4),
+        "laps_in_drs_window": len(valid),   # 0 → Module 2 was never asked (gap never < 1 s)
         "min_gap": round(min_gap, 3),
         "condition_gap": cond_gap,
         "condition_prob": cond_prob,
@@ -173,7 +174,7 @@ def undercut_sweep(chaser: DriverState, leader: DriverState, current_lap: int,
         r = undercut_analysis(chaser, leader, float(g), current_lap, config, **kw)
         out.append({"Gap (s)": round(float(g), 2), "Verdict": r["verdict"],
                     "Min gap (s)": r["min_gap"], "Avg P(overtake)": r["confidence"],
-                    "Gain vs stay out (s)": r["gain_vs_stay_out"][WORST_CASE]})
+                    "Undercut gain, worst case (s)": r["gain_vs_stay_out"][WORST_CASE]})
     return pd.DataFrame(out)
 
 

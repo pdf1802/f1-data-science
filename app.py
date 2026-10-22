@@ -77,6 +77,16 @@ def cached_what_if(base: pd.DataFrame, new: pd.DataFrame, focus: str, config: di
     return r
 
 
+@st.cache_resource(show_spinner=False)
+def model_info() -> dict:
+    """Which model generation is loaded + the physics gate from tools/training.py."""
+    from tools.training import lap_model_sanity
+    lap_model, _, enc = get_models()
+    feats = shared.model_features(lap_model, shared.LAP_FEATURES)
+    sanity = lap_model_sanity(lap_model, range(len(enc.classes_)))
+    return {"version": "V2" if "LapNumber" in feats else "V3", "sanity": sanity}
+
+
 def models_ready() -> bool:
     try:
         get_models()
@@ -103,6 +113,12 @@ def base_layout(fig: go.Figure, title: str = "", height: int = 380, **kw) -> go.
     return fig
 
 
+def fmt_lap(seconds: float) -> str:
+    """86.203 → '1:26.203' (fits in a metric tile; '86.203 s' got truncated)."""
+    m, sec = divmod(float(seconds), 60)
+    return f"{int(m)}:{sec:06.3f}"
+
+
 def show(fig):
     st.plotly_chart(fig, width="stretch", theme="streamlit")
 
@@ -125,6 +141,16 @@ with st.sidebar:
         _label = "repo `models/`" if _md == shared._LOCAL_MODEL_DIR else "`$F1_MODEL_DIR`" \
             if os.environ.get("F1_MODEL_DIR") else f"`{os.path.basename(_md)}`"
         st.success(f"Models loaded from {_label}", icon="✅")
+        _info = model_info()
+        if _info["sanity"]["passed"]:
+            st.caption(f"Module 1 {_info['version']} · physics check ✅")
+        else:
+            st.warning(f"Module 1 {_info['version']} fails the physics check — tyre/stint numbers "
+                       "are not trustworthy.", icon="⚠️")
+            with st.expander("Details"):
+                for _k, _ok in _info["sanity"]["checks"].items():
+                    st.markdown(f"{'✅' if _ok else '❌'} {_k}")
+                st.caption("Fix: `python -m tools.train_models` (Module 1 V3: fuel-corrected target).")
     else:
         st.error("Models not found — model-based tabs are disabled.", icon="⚠️")
     st.markdown(
@@ -368,11 +394,20 @@ with tabs[2]:
         cfg = {"track_temp": tt, "air_temp": tt - 12, "rainfall": 0}
 
         r = undercut_analysis(chaser, leader, gap, lap, cfg, new_c, lead_c, sc_on)
-        v1, v2, v3, v4 = st.columns(4)
-        v1.metric("Verdict", r["verdict"])
+        if r["verdict"] == "BOX BOX":
+            st.success(f"### BOX BOX — {chaser.driver} should pit now", icon="🟢")
+        else:
+            st.error(f"### STAY OUT — the undercut doesn't work here", icon="🔴")
+        v2, v3, v4 = st.columns(3)
         v2.metric("Worst-case min gap", f"{r['min_gap']:.2f} s",
                   f"needs < {VERDICT_GAP} s", delta_color="off", delta_arrow="off")
-        v3.metric("Avg P(overtake)", f"{r['confidence']:.0%}", f"needs > {VERDICT_PROB:.0%}", delta_color="off", delta_arrow="off")
+        if r["laps_in_drs_window"]:
+            v3.metric("Avg P(overtake)", f"{r['confidence']:.0%}", f"needs > {VERDICT_PROB:.0%}",
+                      delta_color="off", delta_arrow="off")
+        else:
+            v3.metric("Avg P(overtake)", "—", "never within 1 s", delta_color="off", delta_arrow="off",
+                      help="Module 2 is only asked on laps where the gap is inside the 1 s DRS window. "
+                           "In the worst case the chaser never gets that close, so there is no attempt.")
         v4.metric("Pit loss used", f"{r['pit_cost']:.1f} s")
 
         fig = go.Figure()
@@ -384,12 +419,20 @@ with tabs[2]:
                                      line=dict(color=col, width=2, dash=dash), marker=dict(size=8)))
         fig.add_hline(0, line=dict(color=NEUTRAL, width=1))
         fig.add_hrect(0, VERDICT_GAP, fillcolor=GOOD, opacity=0.08, line_width=0)
+        # Zoom on the battle: the ~24 s pit-stop spikes would squash the 0–3 s region to a line.
+        y_top = max(gap, max(r["curves"]["Stay out"])) + 3
+        y_bot = min(-2.0, min(min(c) for c in r["curves"].values()) - 0.5)
+        fig.update_yaxes(range=[y_bot, y_top])
         show(base_layout(fig, f"Gap {chaser.driver} → {leader.driver} (positive = {chaser.driver} behind)", 420,
                          xaxis_title="Lap", yaxis_title="Gap (s)"))
-        st.caption("Shaded band = within striking distance (< 1.5 s). Below 0 = the chaser is ahead. "
-                   "'Never reacts' is only within the 5-lap horizon — the leader still owes a stop.")
+        st.caption(f"Zoomed on the fight: lines that leave the top of the chart are the lap a car is in the "
+                   f"pit lane (+{r['pit_cost']:.1f} s). Shaded band = striking distance (< 1.5 s); below 0 = "
+                   "the chaser is ahead. 'Never reacts' is only within the 5-lap horizon — the leader still owes a stop.")
 
         with st.expander("Up to what gap does the undercut work?"):
+            st.caption("'Undercut gain' = how much better the chaser ends up after 5 laps than if nobody had "
+                       "pitted, in the worst case (both cars stopped). Positive means fresh tyres paid off — "
+                       "but it only becomes a position if the gap closes enough to pass.")
             sw = undercut_sweep(chaser, leader, lap, cfg, new_compound=new_c, leader_compound=lead_c,
                                 sc_active=sc_on)
             st.dataframe(sw, hide_index=True, width="stretch")
@@ -425,8 +468,8 @@ with tabs[3]:
         df = compare_strategies(int(laps_), team, {"track_temp": tt, "air_temp": at}, pit_cost=pc)
 
         best = df.iloc[0]
-        k1, k2, k3 = st.columns(3)
-        k1.metric("Best 1-stop", best["Strategy"])
+        st.markdown(f"#### Best 1-stop: {best['Strategy']}")
+        k2, k3 = st.columns(2)
         k2.metric("Optimal pit lap", f"L{best['Optimal pit lap']}", best["Window (±1 s)"], delta_color="off", delta_arrow="off")
         k3.metric("Margin over 2nd best", f"{df['Gap to best (s)'].iloc[1]:.2f} s")
 
@@ -457,8 +500,12 @@ with tabs[3]:
             fig.add_vline(best["Optimal pit lap"] + 0.5, line=dict(dash="dot", color=NEUTRAL))
             show(base_layout(fig, "Predicted LapDelta (s above the driver's best)", 320,
                              hovermode="closest", xaxis_title="Lap", yaxis_title="LapDelta (s)"))
-            st.caption("Fuel burn makes the car faster every lap while tyre wear makes it slower — "
-                       "the optimiser trades these off against the pit loss.")
+            if model_info()["version"] == "V3":
+                st.caption("V3 model: deltas are fuel-corrected, so this is tyre performance only — each "
+                           "stint should start low and rise. The optimiser trades that rise against the pit loss.")
+            else:
+                st.caption("V2 model: deltas still contain fuel, and fuel is confounded with the compound "
+                           "(softs run early, on a heavy car). Retrain with `python -m tools.train_models`.")
 
 
 # ═════════════════════════════ 5. QUALY → RACE ══════════════════════════════
@@ -492,8 +539,11 @@ with tabs[4]:
                 k = st.columns(3)
                 k[0].markdown(f"**Event**  \n{q.attrs.get('event', g)}")
                 if cmpd:
-                    k[1].metric("Spearman ρ — qualifying order", f"{cmpd['spearman_qualy']:.3f}")
-                    k[2].metric("Spearman ρ — model", f"{cmpd['spearman_model']:.3f}",
+                    k[1].metric("ρ qualy order", f"{cmpd['spearman_qualy']:.3f}",
+                                help="Spearman rank correlation between the qualifying order and the "
+                                     f"classified race result ({cmpd['n']} finishers, "
+                                     f"{cmpd['n_excluded']} DNF/unclassified excluded). The naive baseline.")
+                    k[2].metric("ρ model", f"{cmpd['spearman_model']:.3f}",
                                 f"{cmpd['spearman_model'] - cmpd['spearman_qualy']:+.3f} vs baseline")
                 else:
                     k[1].metric("Actual result", "not available")
@@ -543,11 +593,11 @@ with tabs[5]:
             m, v = res["meta"], res["validation"]
             a, b = m["driver_a"], m["driver_b"]
             k = st.columns(4)
-            k[0].metric(f"{a} lap", f"{m['lap_time_a']:.3f} s", m["compound_a"], delta_color="off", delta_arrow="off")
-            k[1].metric(f"{b} lap", f"{m['lap_time_b']:.3f} s", m["compound_b"], delta_color="off", delta_arrow="off")
+            k[0].metric(f"{a} lap", fmt_lap(m["lap_time_a"]), m["compound_a"], delta_color="off", delta_arrow="off")
+            k[1].metric(f"{b} lap", fmt_lap(m["lap_time_b"]), m["compound_b"], delta_color="off", delta_arrow="off")
             faster = a if v["actual_dt_ms"] < 0 else b
             k[2].metric("Faster", faster, f"{abs(v['actual_dt_ms']):.0f} ms", delta_color="off", delta_arrow="off")
-            k[3].metric("Reconstruction error", f"{v['error_ms']:+.1f} ms",
+            k[3].metric("Recon. error", f"{v['error_ms']:+.1f} ms",
                         help="Cumulative delta at the line minus the official lap-time difference. "
                              "A pipeline sanity check: the endpoint is pinned by construction, "
                              "the shape in between is what carries information.")

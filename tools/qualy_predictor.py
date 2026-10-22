@@ -98,14 +98,28 @@ def predict_race_pace(quali: pd.DataFrame, start_compound: str = "MEDIUM",
     return df
 
 
+def classified_finishers(results: pd.DataFrame) -> pd.Series:
+    """
+    Finishing position of CLASSIFIED drivers only.
+
+    FastF1 gives retirements a Position too (RUS was "19th" at Silverstone 2024
+    after retiring). A DNF says nothing about race pace, so it must not enter the
+    rank correlation — it would punish the model for a water-pressure failure.
+    ClassifiedPosition is numeric for finishers and 'R'/'D'/'E'/'W'/'F'/'N' otherwise.
+    """
+    cp = pd.to_numeric(results["ClassifiedPosition"], errors="coerce")
+    res = pd.Series(cp.values, index=results["Abbreviation"].values).dropna().astype(int)
+    return res
+
+
 def load_race_result(year: int, gp: str) -> pd.Series | None:
-    """Actual finishing position per driver (None if the session can't be loaded)."""
+    """Classified finishing position per driver (None if the session can't be loaded)."""
     try:
         import fastf1
         enable_fastf1_cache()
         s = fastf1.get_session(year, gp, "R")
         s.load(laps=False, telemetry=False, weather=False, messages=False)
-        res = s.results.set_index("Abbreviation")["Position"].dropna().astype(int)
+        res = classified_finishers(s.results)
         return res if len(res) else None
     except Exception:
         return None
@@ -118,10 +132,12 @@ def compare_with_actual(pred: pd.DataFrame, actual: pd.Series) -> dict:
     """
     df = pred.copy()
     df["ActualRank"] = df["Driver"].map(actual)
+    n_all = len(df)
     df = df.dropna(subset=["ActualRank"])
     rho = lambda a, b: float(pd.Series(a).rank().corr(pd.Series(b).rank()))
     return {
         "n": len(df),
+        "n_excluded": n_all - len(df),          # DNFs / not classified
         "spearman_qualy": rho(df["QualyRank"].values, df["ActualRank"].values),
         "spearman_model": rho(df["PredictedRaceRank"].values, df["ActualRank"].values),
         "table": df,

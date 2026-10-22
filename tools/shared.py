@@ -79,6 +79,11 @@ PIT_COST_VSC = 19.0       # s lost under Virtual Safety Car
 DRS_WINDOW = 1.0          # s — gap under which an overtake attempt is possible
 NOISE_STD = 0.15          # s — per-lap Gaussian noise used by the Monte Carlo
 FUEL_CORRECTION = 3.5     # s — qualifying fuel (~8 kg) → race start (~105 kg)
+# Lap-time cost of carrying fuel, per lap of fuel still on board.
+# ~0.03 s per kg × ~1.7 kg burnt per lap ≈ 0.055 s/lap. An ASSUMPTION, not
+# learned: Module 1 V3 subtracts it from the target so the model cannot
+# confuse "early in the race (heavy car)" with "this compound is slow".
+FUEL_S_PER_LAP = 0.055
 
 # Backwards-compatible alias (older notebooks import this name)
 PIT_COST_DEFAULT = PIT_COST_GREEN
@@ -218,8 +223,18 @@ def predict_lap_deltas(features: pd.DataFrame | Iterable[dict]) -> np.ndarray:
     is per call, not per row.
     """
     lap_model, _, _ = load_models()
-    df = pd.DataFrame(features)[LAP_FEATURES].astype(float)
+    df = pd.DataFrame(features)[model_features(lap_model, LAP_FEATURES)].astype(float)
     return lap_model.predict(df)
+
+
+def model_features(model, default: list[str]) -> list[str]:
+    """
+    The columns a fitted model was trained on, in order. Lets the tools always
+    pass the full LAP_FEATURES set while V2 (7 features, with LapNumber) and
+    V3 (6 features, without it) models both work.
+    """
+    names = getattr(model, "feature_names_in_", None)
+    return list(names) if names is not None else list(default)
 
 
 def lap_time_from_delta(delta, pace_factor=1.0, base_laptime: float = BASE_LAPTIME):
