@@ -23,8 +23,8 @@ The repository follows a **two-layer structure**:
 |---|----------|---------|--------|
 | **0** | [`tyre_degradation.ipynb`](notebooks/tyre_degradation.ipynb) | Exploratory data analysis | Establishes the data cleaning + degradation patterns that justify Module 1 |
 | **1** | [`lap_time_model.ipynb`](notebooks/lap_time_model.ipynb) | XGBoost regression | Predicts `LapDelta` from compound, tyre age, team, conditions |
-| **2** | [`overtaking_model.ipynb`](notebooks/overtaking_model.ipynb) | XGBoost classification | Predicts overtake probability from gap, tyre delta, DRS state |
-| **3** | [`driver_style_fingerprinting.ipynb`](notebooks/driver_style_fingerprinting.ipynb) | Telemetry resampling + KMeans clustering | Driver style signature (6 features → 4 clusters) |
+| **2** | [`overtaking_model.ipynb`](notebooks/overtaking_model.ipynb) | XGBoost classification | Predicts overtake probability from gap, tyre offset, compounds, lap, position |
+| **3** | [`driver_style_fingerprinting.ipynb`](notebooks/driver_style_fingerprinting.ipynb) | Telemetry resampling + KMeans clustering | Driver style signature (5 features → 4 clusters, V2) |
 
 ### Strategy tools
 
@@ -35,7 +35,7 @@ The repository follows a **two-layer structure**:
 | **3** | [`race_simulator.ipynb`](notebooks/race_simulator.ipynb) | How does the race play out lap-by-lap? | M1, M2 | ✅ Complete |
 | **4** | [`qualy_predictor.ipynb`](notebooks/qualy_predictor.ipynb) | Is pole pace real race pace? | M1 | ✅ Complete |
 | **5** | [`what_if_simulator.ipynb`](notebooks/what_if_simulator.ipynb) | Counterfactual race outcomes (different strategy, weather, etc.) | M1, M2 | ✅ Complete |
-| **6** | *Telemetry Clash* | Who gains in which corners? | M3 | 🚧 Next |
+| **6** | [`telemetry_clash.ipynb`](notebooks/telemetry_clash.ipynb) | Who gains in which corners? | — (signal processing) | ✅ Complete |
 
 ---
 
@@ -52,6 +52,33 @@ git clone https://github.com/pdf1802/f1-data-science.git
 cd f1-data-science
 pip install -r requirements.txt
 ```
+
+### Run the dashboard
+
+```bash
+streamlit run app.py
+```
+
+The **F1 Pit Wall** dashboard puts every tool in one place:
+
+| Tab | What you can do |
+|-----|-----------------|
+| 🏁 Race Simulator | Load a real qualifying grid, edit every driver's strategy in a table, run 1,000+ Monte Carlo races (~1 s) |
+| 🔀 What-If | Change one driver's strategy and compare race-by-race against the baseline with *common random numbers* |
+| ⏱️ Undercut | Gap projections for 4 leader responses + BOX BOX / STAY OUT verdict |
+| 🛞 Stint Optimizer | U-curves for all six legal 1-stop compound pairs |
+| 📊 Qualy → Race | Qualifying → predicted race-pace order, scored against the real result (Spearman ρ) |
+| 📡 Telemetry Clash | Distance-aligned telemetry, cumulative delta and corner-by-corner breakdown |
+
+Model-based tabs need the trained artefacts in `models/` (or set `F1_MODEL_DIR`). Telemetry Clash works without them.
+
+### Run the tests
+
+```bash
+python -m pytest -q
+```
+
+The tests run on small **stand-in models** with the same feature contracts as the real ones (built on the fly in `tests/conftest.py`), so they check logic and contracts — not prediction quality. Set `F1_USE_REAL_MODELS=1` to run them against your trained models.
 
 ### Run the notebooks
 
@@ -83,6 +110,11 @@ This section is intentional. Acknowledging limitations is a feature of the proje
 - **Tool 4 underestimates flying-lap pace on fresh Softs.** The model corrects qualifying times for fuel + compound + degradation, so by construction it predicts a degraded race lap, not a push lap. It is a strong *ranking* tool, not a fastest-lap tool.
 - **Compound delta is estimated per team, with a physics clamp.** Negative compound deltas (which are physically implausible) are clamped to zero to prevent corrections from amplifying noise on short stints.
 - **FastF1 DRS channel is unreliable for some teams** (notably McLaren in 2024). Module 3 V2 drops the `drs_usage_pct` feature for this reason.
+- **Module 2 train/serve skew.** `GapAhead` was built in training as the absolute *lap-time* difference between consecutive cars, but the tools pass the true *time gap*. The fix is a retrain with the real interval; until then overtake probabilities should be read as relative, not calibrated.
+- **Module 1 validation split.** A random row split lets laps from the same race land in train and test (leakage → optimistic scores). A `GroupKFold` by race is the honest evaluation.
+- **Qualy → Race corrections are team-level.** Team-mates can never swap order; the model re-ranks teams, not drivers.
+- **Simulator is a model of a race, not a replay.** Pace factors come from qualifying, Safety Cars are random (not track-specific), and lapped traffic is ignored. It is built for *comparing strategies* (paired, common random numbers), where these errors largely cancel.
+- **Telemetry Clash alignment.** Each car's `Distance` is integrated from its own speed trace, so the same physical point can be a few metres apart between two laps. In slow corners that shows up as short ±200 ms spikes in the running gap. Trends between corners are reliable; individual spikes are not. (GPS nearest-point matching was tried and was noisier.)
 - **No `nGear` / `RPM` features yet.** Both flagged as the most valuable telemetry additions for future Module 3 iterations; currently excluded because the sample size is too small and they would likely overfit.
 
 ---
@@ -94,7 +126,8 @@ This section is intentional. Acknowledging limitations is a feature of the proje
 | Data | FastF1 (2022–2025 sessions, cached locally) |
 | ML | XGBoost, scikit-learn (KMeans, StandardScaler, PCA), UMAP |
 | Analysis | pandas, NumPy, scipy.interpolate |
-| Visualisation | Matplotlib, Plotly |
+| Visualisation | Matplotlib, Plotly, Streamlit |
+| Testing | pytest, Streamlit AppTest |
 | Explainability | SHAP |
 
 ---
@@ -112,7 +145,14 @@ f1-data-science/
 │   ├── stint_optimizer.ipynb           ← Tool 2
 │   ├── race_simulator.ipynb            ← Tool 3
 │   ├── qualy_predictor.ipynb           ← Tool 4
-│   └── what_if_simulator.ipynb         ← Tool 5
+│   ├── what_if_simulator.ipynb         ← Tool 5
+│   └── telemetry_clash.ipynb           ← Tool 6
+├── tools/                              ← Reusable logic imported by the app, notebooks and tests
+│   ├── shared.py                       ← Model loading, feature contracts, constants
+│   ├── undercut.py · stint_optimizer.py · race_simulator.py
+│   └── qualy_predictor.py · telemetry_clash.py
+├── tests/                              ← pytest suite (stand-in models)
+├── app.py                              ← Streamlit dashboard
 ├── models/                             ← Trained .pkl artefacts (gitignored)
 ├── requirements.txt
 ├── LICENSE
