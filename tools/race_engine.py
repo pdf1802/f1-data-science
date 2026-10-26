@@ -453,7 +453,8 @@ def _sec(s):
 
 
 def state_from_real_race(laps: pd.DataFrame, season: int, race: str, at_lap: int,
-                         config: dict | None = None, future_plans: str = "actual"):
+                         config: dict | None = None, future_plans: str = "actual",
+                         current_tyres: dict | None = None, plans: dict | None = None):
     """
     Engine state at the END of lap `at_lap` of a real race (laps = FastF1-shaped table).
 
@@ -462,6 +463,8 @@ def state_from_real_race(laps: pd.DataFrame, season: int, race: str, at_lap: int
           quickest. Nothing after `at_lap` is used.
     future_plans: "actual" → the stops each driver really made afterwards (backtests);
                   "none"   → no more stops planned (you decide).
+    current_tyres: {driver: (compound, tyre_life)} — live use, when lap at_lap+1 does not exist yet.
+    plans: {driver: [(lap, compound), …]} — overrides the remaining stops per driver.
     """
     r = laps[(laps["Season"] == season) & (laps["Race"] == race)].copy()
     if r.empty:
@@ -473,13 +476,23 @@ def state_from_real_race(laps: pd.DataFrame, season: int, race: str, at_lap: int
     r["T"] = _sec(r["Time"])
     now = r[r["LapNumber"] == at_lap].dropna(subset=["T", "Position"]).sort_values("Position")
     nxt_rows = r[r["LapNumber"] == at_lap + 1].set_index("Driver")
-    drivers = [d for d in now["Driver"] if d in nxt_rows.index]          # still running
+    if len(nxt_rows):                                                    # history: still running next lap
+        drivers = [d for d in now["Driver"] if d in nxt_rows.index]
+    else:                                                                # live: lap at_lap+1 not run yet
+        drivers = list(now["Driver"])
     now = now.set_index("Driver").loc[drivers]
 
     cfg = resolve_config({**(config or {}), "circuit": race, "total_laps": L})
-    comp = [str(nxt_rows.loc[d, "Compound"]) for d in drivers]
-    comp = [c if c in ("SOFT", "MEDIUM", "HARD") else "MEDIUM" for c in comp]
-    age = [int(nxt_rows.loc[d, "TyreLife"]) if pd.notna(nxt_rows.loc[d, "TyreLife"]) else 1 for d in drivers]
+    def tyre_now(d):
+        if current_tyres and d in current_tyres:
+            c, a = current_tyres[d]
+        elif d in nxt_rows.index:
+            c, a = nxt_rows.loc[d, "Compound"], nxt_rows.loc[d, "TyreLife"]
+        else:                                    # live, no pit on the last lap: one lap older
+            c, a = now.loc[d, "Compound"], (now.loc[d, "TyreLife"] + 1 if pd.notna(now.loc[d, "TyreLife"]) else 1)
+        c = str(c)
+        return (c if c in ("SOFT", "MEDIUM", "HARD") else "MEDIUM"), (int(a) if pd.notna(a) else 1)
+    comp, age = map(list, zip(*[tyre_now(d) for d in drivers]))
 
     # pace known at lap N: fuel- and tyre-corrected median racing lap per driver
     hist = r[(r["LapNumber"] >= 2) & (r["LapNumber"] <= at_lap) & (r["TrackStatus"].astype(str) == "1")
@@ -500,9 +513,11 @@ def state_from_real_race(laps: pd.DataFrame, season: int, race: str, at_lap: int
     pace = [1 + (med.get(d, med.median() if len(med) else best) - best) / base for d in drivers]
     cfg["base_laptime"] = base
 
-    plans = []
+    plans_out = []
     for d in drivers:
-        if future_plans == "actual":
+        if plans and d in plans:
+            plans_out.append(list(plans[d]))
+        elif future_plans == "actual":
             dl = r[(r["Driver"] == d) & (r["LapNumber"] > at_lap)].sort_values("LapNumber")
             stops = []
             for _, row in dl[dl["PitInTime"].notna()].iterrows():
@@ -510,18 +525,19 @@ def state_from_real_race(laps: pd.DataFrame, season: int, race: str, at_lap: int
                 c = str(after["Compound"].iloc[0]) if len(after) else "HARD"
                 if row["LapNumber"] < L:
                     stops.append((int(row["LapNumber"]), c if c in ("SOFT", "MEDIUM", "HARD") else "HARD"))
-            plans.append(stops)
+            plans_out.append(stops)
         else:
-            plans.append([])
+            plans_out.append([])
 
-    setup = build_setup(drivers, [str(now.loc[d, "Team"]) for d in drivers], pace, comp, age, plans, cfg)
+    setup = build_setup(drivers, [str(now.loc[d, "Team"]) for d in drivers], pace, comp, age, plans_out, cfg)
     setup["fuel_in_model"] = fuel_in_model
     state = initial_state(setup, 1)
     state["lap"] = at_lap
     state["cum"] = (now["T"].to_numpy(float) - now["T"].min())[None, :]
     stops_done = r[(r["LapNumber"] <= at_lap) & r["PitInTime"].notna()].groupby("Driver").size()
     state["n_stops"] = np.array([[int(stops_done.get(d, 0)) for d in drivers]])
-    if str(nxt_rows.loc[drivers[0], "TrackStatus"]).find("4") >= 0:    # SC already out
+    status_row = nxt_rows.loc[drivers[0]] if drivers[0] in nxt_rows.index else now.loc[drivers[0]]
+    if str(status_row["TrackStatus"]).find("4") >= 0:                    # SC already out
         state["sc_left"] = np.array([2])
     info = {"season": season, "race": race, "at_lap": at_lap, "total_laps": L,
             "pace": dict(zip(drivers, np.round(pace, 4))), "base_laptime": base}

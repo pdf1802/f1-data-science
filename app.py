@@ -597,9 +597,18 @@ with tabs[4]:
                         hovertemplate=f"{row['Driver']} ({row['Team']})<br>%{{x}}: P%{{y}}<extra></extra>"))
                 fig.update_yaxes(range=[len(pred) + 0.5, 0.5], dtick=1, title="Position")
                 show(base_layout(fig, "Qualifying rank → predicted race-pace rank", 560, hovermode="closest"))
-                st.info("Every correction is team-level, so team-mates can never swap order — the model "
-                        "re-shuffles teams, not drivers. A driver-level race-pace feature is the obvious next step.",
-                        icon="🔍")
+                if "TeamEncoded" in shared.model_features(get_models()[0], shared.LAP_FEATURES):
+                    st.info("Every correction is team-level, so team-mates can never swap order — the model "
+                            "re-shuffles teams, not drivers. A driver-level race-pace feature is the obvious "
+                            "next step.", icon="🔍")
+                else:
+                    st.info("Module 1 V3.1 has no team effect: adding the team made the tyre physics worse "
+                            "and the error on unseen races larger. So the fuel, compound and degradation "
+                            "corrections are the same for every car and **the predicted order equals the "
+                            "qualifying order**. That is an honest result, not a bug: from qualifying alone "
+                            "the data gives no reliable reason to re-order the grid. What re-orders a race is "
+                            "pace seen *during* it — which is what the Race Engineer uses (it beats 'order "
+                            "stays the same' in 75 % of the backtested races).", icon="🔍")
                 cols = ["QualyRank", "Driver", "Team", "QualyTime", "FuelAdjTime", "CompoundDelta",
                         "DegAverage", "PredictedRacePace", "PredictedRaceRank", "Direction"]
                 show_df = pred[cols].copy()
