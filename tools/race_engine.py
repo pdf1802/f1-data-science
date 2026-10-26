@@ -34,7 +34,8 @@ DIRTY_AIR_PENALTY = 0.20  # s/lap when within DRS_WINDOW of the car ahead
 PIT_NOISE_STD = 0.8       # s — stop-to-stop variation
 # s/lap — how far a driver's pace can drift from what has been seen so far. Calibrated on
 # 36 real races (tools/backtest.py): at 0.25 the simulated 10–90 % range contains the real
-# finishing position 79.5 % of the time (calibrated); 0.12 gave 67 % (overconfident).
+# finishing position 78.9 % of the time (calibrated); 0.12 gives 67 % (overconfident),
+# 0.40 gives 87 % (too cautious). The log score is flat from 0.25 to 0.40.
 RACE_FORM_STD = 0.25
 START_STD = 0.6           # s — lap-1 chaos: launch, first-corner positioning
 SC_LAP_FACTOR = 1.35      # SC lap ≈ 35 % slower than a racing lap

@@ -4,54 +4,74 @@
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![FastF1](https://img.shields.io/badge/data-FastF1-E10600.svg)](https://github.com/theOehrly/Fast-F1)
 
-An end-to-end **Formula 1 race strategy system** built as a teaching portfolio. The project trains a set of **science modules** on real FastF1 telemetry (2022–2025) and applies them through **strategy tools** that answer concrete race questions — *should I pit now? is pole pace real race pace? does this driver eat tyres?*
+An end-to-end **Formula 1 race strategy system** built as a teaching portfolio. It trains **science modules** on real FastF1 lap data (2022–2025), composes them into a **lap-by-lap race engine** that is backtested against 36 real races, and puts that engine on the pit wall: a **Streamlit dashboard** of strategy tools and a live **Race Engineer** that makes the box / stay-out call while a race replays in [f1-race-replay](https://github.com/IAmTomShaw/f1-race-replay) — or lets you take control of the race from any lap.
 
-The project is structured as a curriculum: each module teaches one ML/statistics concept (XGBoost regression, classification, unsupervised clustering, Monte Carlo) and each tool demonstrates how the models compose into something useful.
+The project is structured as a curriculum: each module teaches one ML/statistics concept (XGBoost regression and classification, fixed-effects regression, clustering, paired Monte Carlo) and each tool shows how the models compose into something useful. Every number below was re-run for this README; the limitations section is part of the project, not an afterthought.
+
+![Race Engineer window](docs/race_engineer_window.png)
 
 ---
 
 ## 📚 Curriculum
 
-The repository follows a **two-layer structure**:
-
-- **Science modules** train the underlying models (one notebook per ML concept).
-- **Strategy tools** consume those models to answer real race questions.
-
 ### Science modules
 
 | # | Notebook | Concept | Output |
 |---|----------|---------|--------|
-| **0** | [`tyre_degradation.ipynb`](notebooks/tyre_degradation.ipynb) | Exploratory data analysis | Establishes the data cleaning + degradation patterns that justify Module 1 |
-| **1** | [`lap_time_model.ipynb`](notebooks/lap_time_model.ipynb) | XGBoost regression | Predicts `LapDelta` from compound, tyre age, team, conditions |
-| **2** | [`overtaking_model.ipynb`](notebooks/overtaking_model.ipynb) | XGBoost classification | Predicts overtake probability from gap, tyre offset, compounds, lap, position |
-| **3** | [`driver_style_fingerprinting.ipynb`](notebooks/driver_style_fingerprinting.ipynb) | Telemetry resampling + KMeans clustering | Driver style signature (5 features → 4 clusters, V2) |
+| **0** | [`tyre_degradation.ipynb`](notebooks/tyre_degradation.ipynb) | Exploratory data analysis | The data cleaning + degradation patterns that justify Module 1 |
+| **1** | [`lap_time_model.ipynb`](notebooks/lap_time_model.ipynb) | XGBoost regression + fixed-effects reference | `LapDelta` from compound, tyre age and circuit (V3.1: fuel-corrected, clean air, dry races, physics gate) |
+| **2** | [`overtaking_model.ipynb`](notebooks/overtaking_model.ipynb) | XGBoost classification, calibrated | P(pass the car ahead this lap) from the real gap, tyres, lap, position, circuit |
+| **3** | [`driver_style_fingerprinting.ipynb`](notebooks/driver_style_fingerprinting.ipynb) | Telemetry resampling + KMeans | Driver style signature (5 features → 4 clusters, V2) |
 
-### Strategy tools
+### Strategy tools (dashboard tabs and notebooks)
 
-| # | Notebook | Question | Uses | Status |
-|---|----------|----------|------|--------|
-| **1** | [`undercut_calculator.ipynb`](notebooks/undercut_calculator.ipynb) | Will the undercut actually work right now? | M1, M2 | ✅ Complete |
-| **2** | [`stint_optimizer.ipynb`](notebooks/stint_optimizer.ipynb) | What's the optimal pit lap for this stint? | M1 | ✅ Complete |
-| **3** | [`race_simulator.ipynb`](notebooks/race_simulator.ipynb) | How does the race play out lap-by-lap? | M1, M2 | ✅ Complete |
-| **4** | [`qualy_predictor.ipynb`](notebooks/qualy_predictor.ipynb) | Is pole pace real race pace? | M1 | ✅ Complete |
-| **5** | [`what_if_simulator.ipynb`](notebooks/what_if_simulator.ipynb) | Counterfactual race outcomes (different strategy, weather, etc.) | M1, M2 | ✅ Complete |
-| **6** | [`telemetry_clash.ipynb`](notebooks/telemetry_clash.ipynb) | Who gains in which corners? | — (signal processing) | ✅ Complete |
+| # | Notebook | Question | Uses |
+|---|----------|----------|------|
+| **1** | [`undercut_calculator.ipynb`](notebooks/undercut_calculator.ipynb) | Will the undercut actually work right now? | M1, M2 |
+| **2** | [`stint_optimizer.ipynb`](notebooks/stint_optimizer.ipynb) | What's the optimal pit lap for this stint? | M1 |
+| **3** | [`race_simulator.ipynb`](notebooks/race_simulator.ipynb) | How does the race play out lap by lap? | M1, M2, engine |
+| **4** | [`qualy_predictor.ipynb`](notebooks/qualy_predictor.ipynb) | Is pole pace real race pace? | M1 |
+| **5** | [`what_if_simulator.ipynb`](notebooks/what_if_simulator.ipynb) | Same races, different strategy: what changes? | M1, M2, engine |
+| **6** | [`telemetry_clash.ipynb`](notebooks/telemetry_clash.ipynb) | Who gains in which corners? | signal processing |
+
+### Race engine and live tools
+
+| Piece | File | What it does |
+|-------|------|--------------|
+| Circuit profiles | [`tools/circuit_profiles.py`](tools/circuit_profiles.py) | Laps, typical lap, **pit loss measured from real green-flag stops** (Monaco 19 s … Singapore 27 s), Safety Car rate with empirical-Bayes shrinkage |
+| Race engine | [`tools/race_engine.py`](tools/race_engine.py) | Race state for S simulations × D drivers and a `step()` that advances one lap; starts from the grid or from **any lap of a real race** using only what was known then |
+| Backtest | [`tools/backtest.py`](tools/backtest.py) | From 40 % distance in 36 real races, does the engine predict the finishing order better than "the order stays the same"? |
+| Race Engineer | [`tools/race_engineer.py`](tools/race_engineer.py) | Live feed → strategy call for one driver, once per lap: options raced to the flag on the same random draws |
+| Pit-wall window | [`integrations/f1_race_replay/`](integrations/f1_race_replay/README.md) | PySide6 window on f1-race-replay's telemetry stream; stand-in stream from the lap data; **take-control mode** |
 
 ---
 
 ## 🚀 Quick Start
 
-### Prerequisites
-- Python 3.9+
-- Git, pip
-
-### Install
-
 ```bash
 git clone https://github.com/pdf1802/f1-data-science.git
 cd f1-data-science
 pip install -r requirements.txt
+pip install -r integrations/f1_race_replay/requirements.txt   # PySide6, only for the Race Engineer window
 ```
+
+### Data
+
+F1's live-timing archive answers **401** to unauthenticated downloads since October 2026 (FastF1 issue #978), so the project works from one Parquet file exported from a FastF1 cache (43 races, 44,526 laps, 2022–2025; not committed):
+
+```bash
+python -m tools.export_cache --out data/laps_2022_2025.parquet     # from $F1_CACHE_DIR
+```
+
+### Train the models
+
+```bash
+python -m tools.train_models --laps data/laps_2022_2025.parquet
+python -m tools.circuit_profiles --laps data/laps_2022_2025.parquet  # refresh tools/circuit_profiles.json
+python -m tools.backtest --laps data/laps_2022_2025.parquet          # ~2 min
+```
+
+`train_models` keeps dry races, fits the physics reference, evaluates with **GroupKFold by race**, runs the **physics sanity gates** and only overwrites `models/` if every check passes (old files go to `models/backup_<timestamp>/`, plus `training_report.json`).
 
 ### Run the dashboard
 
@@ -59,77 +79,96 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-The **F1 Pit Wall** dashboard puts every tool in one place:
-
 | Tab | What you can do |
 |-----|-----------------|
-| 🏁 Race Simulator | Load a real qualifying grid, edit every driver's strategy in a table, run 1,000+ Monte Carlo races (~1 s) |
-| 🔀 What-If | Change one driver's strategy and compare race-by-race against the baseline with *common random numbers* |
+| 🏁 Race Simulator | Real qualifying grid, editable strategies, 1,000+ Monte Carlo races on the lap-by-lap engine |
+| 🔀 What-If | Change one driver's strategy and compare race by race against the baseline (common random numbers) |
 | ⏱️ Undercut | Gap projections for 4 leader responses + BOX BOX / STAY OUT verdict |
-| 🛞 Stint Optimizer | U-curves for all six legal 1-stop compound pairs |
-| 📊 Qualy → Race | Qualifying → predicted race-pace order, scored against the real result (Spearman ρ) |
+| 🛞 Stint Optimizer | U-curves for all six legal one-stop compound pairs |
+| 📊 Qualy → Race | Qualifying → predicted race-pace order, scored against the real result |
 | 📡 Telemetry Clash | Distance-aligned telemetry, cumulative delta and corner-by-corner breakdown |
 
-Model-based tabs need the trained artefacts in `models/` (or set `F1_MODEL_DIR`). Telemetry Clash works without them.
+Circuit profiles set the defaults (laps, pit loss, Safety Car rate) for the chosen race.
 
-### Train / retrain the models
+### Run the Race Engineer
 
 ```bash
-python -m tools.train_models          # Module 1 + 2 (V3), ~32 races; first run downloads data
-python -m tools.train_models --quick  # 2-race smoke test of the pipeline, saves nothing
+python -m integrations.f1_race_replay.replay_stream --race "2023 Bahrain Grand Prix" --speed 30
+python -m integrations.f1_race_replay.race_engineer_window --driver ALO
 ```
 
-The script evaluates with **GroupKFold by race**, runs **physics sanity checks** (fresh SOFT < MEDIUM < HARD,
-every compound degrades, closer gap → more overtakes) and only overwrites `models/` if they pass — the old
-files are backed up to `models/backup_<timestamp>/` and a `training_report.json` is written. The dashboard
-sidebar re-runs the Module 1 physics check on whatever model it loads.
+Add `--take-control 20` to the stream: the real race runs to lap 20, then the engine races on and the window's **BOX** buttons make the calls. With f1-race-replay itself: `python main.py --telemetry` in that repo, then the window. Details in the [integration README](integrations/f1_race_replay/README.md).
 
 ### Run the tests
 
 ```bash
-python -m pytest -q
+python -m pytest -q        # 66 tests, ~25 s
 ```
 
-The tests run on small **stand-in models** with the same feature contracts as the real ones (built on the fly in `tests/conftest.py`), so they check logic and contracts — not prediction quality. Set `F1_USE_REAL_MODELS=1` to run them against your trained models.
+The tests run on small **stand-in models** with the same feature contracts as the real ones (built in `tests/conftest.py`), so they check logic and contracts — not prediction quality. `F1_USE_REAL_MODELS=1` runs them against your trained models. The window test runs offscreen and is skipped without PySide6.
 
 ### Run the notebooks
 
-The notebooks are designed to run in **Google Colab** (each one has a Colab badge at the top) but they also run locally in Jupyter. The FastF1 cache is configured to write to Google Drive in Colab — change `CACHE_DIR` if running locally.
-
-Recommended order for first-time readers:
-
-1. `tyre_degradation.ipynb` — the EDA that motivates everything else
-2. `lap_time_model.ipynb` — the workhorse model the tools depend on
-3. Any tool notebook — they document how the models compose
+They run in **Google Colab** (badge at the top of each) or locally in Jupyter. The V3.1 sections of Modules 1 and 2 load the Parquet, so they need no FastF1 download. Recommended order: `tyre_degradation` → `lap_time_model` → `overtaking_model` → any tool.
 
 ---
 
-## 📊 Validation highlights
+## 📊 Results (re-run on 26 Oct 2026, xgboost 3.2)
 
-Models are validated on held-out races, not just train/test splits:
+**Module 1 — lap-time model (V3.1).** 36 dry races, 17,442 clean-air laps.
 
-- **Module 1** — strategy recommender tested on Miami 2024 Leclerc one-stop. Predicted optimal pit window matches the team's actual decision within 2 laps.
-- **Module 3** — clustering correctly groups HAM + LEC (similar smooth/late-brake style) and isolates the McLaren pair (distinctive aggressive throttle). Documented V1 → V2 iteration after catching a corrupted DRS channel that was driving a spurious 1-driver cluster.
-- **Tool 4** — Bahrain 2023 ranking predicts ALO P1 race pace; ALO finished P3 on the road (VER won via driver extraction above car baseline, which is not a feature in the model — see *Known limitations* below).
+| GroupKFold by race (honest) | Predict the median (bar to beat) | Random 80/20 split (leaky) |
+|---|---|---|
+| **0.669 s** MAE | 0.698 s (+4.1 %) | 0.562 s |
+
+It beats the baseline on races it has never seen, but only just: compound, tyre age and circuit explain the *shape* of degradation (what the tools need), not every lap. All physics checks pass (fresh SOFT fastest, every compound degrades, SOFT degrades most, fresh HARD not clearly faster than MEDIUM).
+
+**Physics reference (fixed-effects regression, 95 % CI clustered by race).** Fuel burn + track evolution **0.050 ± 0.008 s/lap** — the 0.055 s/lap assumed for the fuel correction is inside the interval. Fresh MEDIUM +0.42 s and HARD +0.38 s vs SOFT (±0.28 s): MEDIUM vs HARD cannot be told apart, so the gate doesn't pretend it can. Degradation SOFT 0.077, MEDIUM 0.048, HARD 0.045 s/lap — these slopes also continue the model beyond the tyre ages it has data for (trees can't extrapolate).
+
+**Module 2 — overtake model (V3.1).** 26,015 car-behind-car situations, 4.0 % overtakes. Log loss **0.090** vs 0.168 for the constant model, ROC-AUC 0.946, PR-AUC 0.572. Calibrated (out of fold) up to ~40 %; slightly optimistic above (says 67 %, 60 % happen). Same situation (0.6 s, 22 laps fresher tyres): **P(pass) 44 % at Monaco vs 91 % in Bahrain**.
+
+**Race engine — backtest on 36 dry races** (real state and real strategies from 40 % distance, pace estimated only from laps already run, 300 races each):
+
+| | Engine | "Order stays the same" |
+|---|---|---|
+| Spearman ρ with the real result | **0.897** | 0.846 |
+| Mean absolute position error | **1.46** | 1.95 |
+| Races where the engine ranks better | **75 %** | |
+
+`RACE_FORM_STD = 0.25 s/lap` is calibrated so that the simulated 10–90 % range contains the real finishing position **78.9 %** of the time (0.12 → 67 %, overconfident; 0.40 → 87 %, too cautious). The baseline wins 9 of 36 races; two clearly — Melbourne 2023 (ρ 0.53 vs 0.78, three red flags) and Singapore 2023 (0.62 vs 0.76) — and the other seven by ≤ 0.03, mostly races where the order barely changed (Monaco 2024: 0.94 vs 0.97).
+
+**Race Engineer — live state accuracy.** Cars behind the followed driver have not crossed the line yet when the call is made, so their gap is estimated from where they are and their recent pace. On 2,691 estimates (Bahrain 2023, Monza 2024, Monaco 2025): median error **0.17 s**, under 2 s in 90 % of cases; 0.02 s for cars within 10 s of the line; median 4.7 s when that car's lap contains a pit stop.
+
+**Module 3** clusters HAM + LEC together (smooth, late braking) and isolates the McLaren pair; the V1 → V2 iteration removed a corrupted DRS channel that created a one-driver cluster.
 
 ---
 
 ## ⚠️ Known limitations
 
-This section is intentional. Acknowledging limitations is a feature of the project, not a bug.
+Acknowledging limitations is a feature of the project, not a bug.
 
-- **Car confound (Module 3).** Driver style is extracted from telemetry that is partially shaped by the car. A Ferrari with strong front-end will look "smooth" regardless of who is driving it. Mitigated by clustering on inputs that are largely driver-controlled (throttle smoothness, brake application %), but not eliminated.
-- **Tool 4 underestimates flying-lap pace on fresh Softs.** The model corrects qualifying times for fuel + compound + degradation, so by construction it predicts a degraded race lap, not a push lap. It is a strong *ranking* tool, not a fastest-lap tool.
-- **Compound delta is estimated per team, with a physics clamp.** Negative compound deltas (which are physically implausible) are clamped to zero to prevent corrections from amplifying noise on short stints.
-- **FastF1 DRS channel is unreliable for some teams** (notably McLaren in 2024). Module 3 V2 drops the `drs_usage_pct` feature for this reason.
-- **Fixed in V3 — Module 1 fuel/compound confound.** V2's target (`lap time − best lap`) still contained fuel load. Softs run early on a heavy car, so the model learned that *softs are slow* and that *tyres get faster with age*. V3 subtracts an assumed fuel effect (0.055 s per lap of fuel, `shared.FUEL_S_PER_LAP`), drops `LapNumber` (a proxy for the compound), adds a monotonic constraint on tyre age and gates saving on physics checks. The fuel constant is an assumption: `--fuel` lets you test sensitivity.
-- **Fixed in V3 — wrong race in the training data.** `'Great Britain'` was fuzzy-matched by FastF1 to the **Austrian GP** for 2023 and 2024. V3 uses full event names and asserts the loaded event.
-- **Fixed in V3 — Module 2.** `GapAhead` is now the real gap (session clock) at the end of the previous lap, overtakes exclude pit stops and non-green laps, and the model is trained without `scale_pos_weight` so `predict_proba` is usable as a probability (checked with a calibration table).
-- **Evaluation.** All V3 scores are GroupKFold by race; a random row split leaks laps of the same race into train and test.
-- **Qualy → Race corrections are team-level.** Team-mates can never swap order; the model re-ranks teams, not drivers.
-- **Simulator is a model of a race, not a replay.** Pace factors come from qualifying, Safety Cars are random (not track-specific), and lapped traffic is ignored. It is built for *comparing strategies* (paired, common random numbers), where these errors largely cancel.
-- **Telemetry Clash alignment.** Each car's `Distance` is integrated from its own speed trace, so the same physical point can be a few metres apart between two laps. In slow corners that shows up as short ±200 ms spikes in the running gap. Trends between corners are reliable; individual spikes are not. (GPS nearest-point matching was tried and was noisier.)
-- **No `nGear` / `RPM` features yet.** Both flagged as the most valuable telemetry additions for future Module 3 iterations; currently excluded because the sample size is too small and they would likely overfit.
+- **One-stop strategies look too good at abrasive tracks.** Degradation is one curve per compound with a circuit offset, so per-circuit degradation is compressed. The Race Engineer often says "no more stops" in Bahrain, where teams really two-stop.
+- **Survivorship bias at high tyre ages.** Only tyres that were still good get run long, so the data under-states late-stint degradation; the linear tail beyond the 90th-percentile age is a partial fix.
+- **Fresh MEDIUM vs HARD are indistinguishable** in the data (±0.28 s), so the models can't rank them.
+- **No fuel effect between strategies.** Fuel is the same for everyone at a given lap, so mirror strategies cost the same.
+- **Qualy → Race ≈ qualifying order in V3.1.** The lap model no longer uses the team (it was a race fingerprint), so team-level race-pace corrections are gone; the tab says so.
+- **Rivals in the Race Engineer follow a default plan** (stop at the edge of the tyre-age data / two-compound rule), not their real strategy. Calls are "given what we assume they do".
+- **Dry races only.** Seven wet races are excluded from training; on INTERMEDIATE / WET the Race Engineer makes no call.
+- **2022–2025 era only.** 2026 cars and rules are different and deliberately excluded. Missing from the cache: British 2024/2025, Japanese 2024, Chinese 2024.
+- **Overtake probabilities are slightly optimistic above 40 %** (calibration table above).
+- **Car confound (Module 3).** Driver style is extracted from telemetry partly shaped by the car; mitigated by driver-controlled inputs, not eliminated.
+- **Telemetry Clash alignment.** Each car's `Distance` is integrated from its own speed trace, so slow corners show short ±200 ms spikes in the running gap. Trends between corners are reliable; single spikes are not.
+- **No `nGear` / `RPM` features** in Module 3 yet (too few samples; would likely overfit).
+- **Stand-in stream positions are schematic** (constant speed within a lap, on a circle): the Parquet has lap times, not GPS.
+
+### Fixed along the way (each one is a lesson)
+
+- **V2 → V3, fuel/compound confound.** The target `lap time − best lap` still contained fuel: softs run early on a heavy car, so the model learned that *softs are slow* and *tyres get faster with age*. V3 subtracts the fuel effect, drops `LapNumber` (a proxy for the compound), adds a monotonic constraint on tyre age and gates saving on physics checks.
+- **V3 → V3.1, race fingerprints.** V3 lost to "predict the median" on unseen races (0.968 vs 0.796 s): track/air temperature are constant within a race and let the trees memorise races. Weather dropped, circuit added, clean-air laps only (softs run in traffic), dry races only.
+- **Wrong race in the training data.** `'Great Britain'` was fuzzy-matched by FastF1 to the **Austrian GP** for 2023 and 2024; full event names are now asserted.
+- **Module 2 train/serve skew.** `GapAhead` was a lap-time difference in training and a real gap at inference; overtakes included pit stops; `scale_pos_weight` inflated probabilities the simulator consumes.
+- **Race Engineer dropped cars.** The live state was built at the leader's lap, so every car that had not crossed that line yet disappeared ("ALO is not running"). Now it is built at the followed driver's lap, with estimated line times for cars behind and lapped cars, and tested for future leakage.
+- **Two clocks.** f1-race-replay sends lap end times on the FastF1 session clock and the same moments on the replay clock; comparing the wrong pair would make every lap look either completed or not started.
 
 ---
 
@@ -137,11 +176,13 @@ This section is intentional. Acknowledging limitations is a feature of the proje
 
 | Layer | Tools |
 |-------|-------|
-| Data | FastF1 (2022–2025 sessions, cached locally) |
-| ML | XGBoost, scikit-learn (KMeans, StandardScaler, PCA), UMAP |
-| Analysis | pandas, NumPy, scipy.interpolate |
-| Visualisation | Matplotlib, Plotly, Streamlit |
-| Testing | pytest, Streamlit AppTest |
+| Data | FastF1 (2022–2025, cached) → Parquet |
+| ML / statistics | XGBoost, scikit-learn, fixed-effects OLS with clustered CIs, UMAP |
+| Simulation | NumPy (vectorised over simulations × drivers), paired Monte Carlo / common random numbers |
+| Analysis | pandas, SciPy |
+| Apps | Streamlit (dashboard), PySide6 (Race Engineer window), TCP JSON-lines (f1-race-replay protocol) |
+| Visualisation | Matplotlib, Plotly |
+| Testing | pytest, Streamlit AppTest, offscreen Qt |
 | Explainability | SHAP |
 
 ---
@@ -150,32 +191,26 @@ This section is intentional. Acknowledging limitations is a feature of the proje
 
 ```
 f1-data-science/
-├── notebooks/                          ← All science modules + strategy tools
-│   ├── tyre_degradation.ipynb          ← Module 0 (EDA)
-│   ├── lap_time_model.ipynb            ← Module 1
-│   ├── overtaking_model.ipynb          ← Module 2
-│   ├── driver_style_fingerprinting.ipynb  ← Module 3
-│   ├── undercut_calculator.ipynb       ← Tool 1
-│   ├── stint_optimizer.ipynb           ← Tool 2
-│   ├── race_simulator.ipynb            ← Tool 3
-│   ├── qualy_predictor.ipynb           ← Tool 4
-│   ├── what_if_simulator.ipynb         ← Tool 5
-│   └── telemetry_clash.ipynb           ← Tool 6
-├── tools/                              ← Reusable logic imported by the app, notebooks and tests
-│   ├── shared.py                       ← Model loading, feature contracts, constants
-│   ├── undercut.py · stint_optimizer.py · race_simulator.py
-│   ├── qualy_predictor.py · telemetry_clash.py
-│   ├── training.py                     ← Module 1 + 2 V3 data pipelines, evaluation, sanity gates
-│   └── train_models.py                 ← `python -m tools.train_models`
-├── tests/                              ← pytest suite (stand-in models)
-├── app.py                              ← Streamlit dashboard
-├── models/                             ← Trained .pkl artefacts (gitignored)
+├── notebooks/                       ← science modules + strategy tools (Colab-ready)
+├── tools/                           ← reusable logic imported by the app, notebooks and tests
+│   ├── shared.py                    ← model loading, feature contracts, constants
+│   ├── training.py · train_models.py← Module 1 + 2 V3.1 pipelines, evaluation, sanity gates
+│   ├── export_cache.py              ← FastF1 cache → Parquet
+│   ├── circuit_profiles.py (+ .json)← measured per-circuit constants
+│   ├── race_engine.py               ← lap-by-lap engine, LiveRace, state from a real race
+│   ├── backtest.py                  ← engine vs reality on 36 races
+│   ├── race_engineer.py             ← live feed → strategy call
+│   └── undercut.py · stint_optimizer.py · race_simulator.py · qualy_predictor.py · telemetry_clash.py
+├── integrations/f1_race_replay/     ← Race Engineer window, stand-in stream, take control
+├── tests/                           ← pytest suite (stand-in models, synthetic races)
+├── docs/                            ← images for the READMEs
+├── app.py                           ← Streamlit dashboard
+├── models/                          ← trained artefacts (gitignored, see models/README.md)
+├── data/                            ← laps Parquet (gitignored)
 ├── requirements.txt
 ├── LICENSE
 └── README.md
 ```
-
-Model artefacts (`.pkl`) are not committed — generate them with `python -m tools.train_models` (or the V3 section at the end of the Module 1 / Module 2 notebooks), which writes to `models/`.
 
 ---
 
@@ -190,4 +225,5 @@ Educational and fan-made. Not affiliated with Formula 1, the FIA, or any team. N
 ## 🔗 References
 
 - [FastF1](https://github.com/theOehrly/Fast-F1) — the data layer this entire project depends on
+- [f1-race-replay](https://github.com/IAmTomShaw/f1-race-replay) — the race replay and telemetry stream the Race Engineer listens to
 - [OpenF1 API](https://openf1.org) — live timing data

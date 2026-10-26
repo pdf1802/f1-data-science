@@ -77,7 +77,8 @@ def test_take_control_buttons_send_commands(app):
 
 def test_circuit_guess():
     assert guess_circuit({"session_info": {"event_name": "Monaco Grand Prix"}})[0] == "Monaco Grand Prix"
-    assert guess_circuit({"circuit_length_m": 7004.0})[0] == "Belgian Grand Prix"
-    name, why = guess_circuit({"circuit_length_m": 5412.0})          # Bahrain and Miami: same length
-    assert name is None and "Bahrain" in why and "Miami" in why
+    assert guess_circuit({"circuit_length_m": 6950.0})[0] == "Belgian Grand Prix"   # measured, not official
+    assert guess_circuit({"circuit_length_m": 3320.0, "session_data": {"total_laps": 78}})[0] == "Monaco Grand Prix"
+    name, why = guess_circuit({"circuit_length_m": 5400.0, "session_data": {"total_laps": 57}})
+    assert name is None and "Bahrain" in why and "Miami" in why    # same length, same laps
     assert guess_circuit({})[0] is None

@@ -73,19 +73,27 @@ QStatusBar {{ color: {DIM}; }}
 def guess_circuit(payload: dict) -> tuple[str | None, str]:
     """
     Circuit for the strategy models, and where it came from. The real payload has
-    no event name (proposed upstream as `session_info`), so fall back to the
-    circuit length it does send — unique for most tracks, not for Bahrain/Miami.
+    no event name (proposed upstream as `session_info`), so fall back to the lap
+    length it does send. That length is FastF1's measured distance of a reference
+    lap (a little off the official figure), hence the 2.5 % tolerance; the race
+    distance in laps narrows it down. Several close tracks (Bahrain/Miami,
+    Monza/Suzuka, Yas Marina/Albert Park) share both — then the user picks.
     """
     name = (payload.get("session_info") or {}).get("event_name")
     if name:
         return name, "from the stream"
     length = payload.get("circuit_length_m")
     if length:
-        close = [c for c, m in CIRCUIT_LENGTH_M.items() if abs(m - float(length)) / m < 0.01]
+        from tools.circuit_profiles import load_profiles
+        laps = (payload.get("session_data") or {}).get("total_laps")
+        close = [c for c, m in CIRCUIT_LENGTH_M.items() if abs(m - float(length)) / m < 0.025]
+        profiles = load_profiles()
+        same_laps = [c for c in close if laps and (profiles.get(c) or {}).get("laps") == int(laps)]
+        close = same_laps or close
         if len(close) == 1:
             return f"{close[0]} Grand Prix", "guessed from the track length"
         if close:
-            return None, "ambiguous track length (" + " / ".join(close) + ") — pick the circuit"
+            return None, "ambiguous track length (" + " / ".join(sorted(close)) + ") — pick the circuit"
     return None, "unknown circuit — pick it (generic profile meanwhile)"
 
 

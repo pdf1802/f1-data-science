@@ -20,7 +20,8 @@ Metrics (only drivers who were classified at the flag):
                  10–90 % range (≈ 80 % = calibrated, much less = overconfident)
 
 It also calibrates RACE_FORM_STD (how much a driver's pace can differ from what
-was seen so far) by the log score.
+was seen so far): the value whose 80 % intervals really contain ~80 % of results
+(the log score is reported too; it is flat between 0.25 and 0.4).
 """
 
 from __future__ import annotations
@@ -77,7 +78,7 @@ def backtest_race(laps, season, race, frac=0.4, n_sims=300, form_std=None, seed=
             "cover80": float(((real >= lo) & (real <= hi)).mean())}
 
 
-def run(laps: pd.DataFrame, form_stds=(0.0, 0.06, 0.12, 0.2), n_sims=300, frac=0.4) -> tuple[pd.DataFrame, pd.DataFrame]:
+def run(laps: pd.DataFrame, form_stds=(0.0, 0.12, 0.2, 0.25, 0.3, 0.4), n_sims=300, frac=0.4) -> tuple[pd.DataFrame, pd.DataFrame]:
     from tools.training import dry_races
     dry, _ = dry_races(laps)
     races = dry.groupby(["Season", "Race"]).size().index.tolist()
@@ -104,14 +105,17 @@ def main(argv=None):
     df, summary = run(pd.read_parquet(args.laps), n_sims=args.sims, frac=args.frac)
     pd.set_option("display.width", 200)
     print(summary.round(3).to_string())
-    best = float(summary["log_score"].idxmax())
-    print(f"\nBest RACE_FORM_STD by log score: {best}")
+    by_log = float(summary["log_score"].idxmax())
+    best = float((summary["cover80"] - 0.8).abs().idxmin())
+    print(f"\nRACE_FORM_STD — best log score: {by_log}; 80 % interval closest to 80 % coverage: {best}"
+          f" (used: {eng.RACE_FORM_STD})")
     print(df[df.form_std == best][["season", "race", "at_lap", "drivers", "rho_sim", "rho_now", "mae_sim",
                                     "mae_now", "cover80"]].round(2).to_string(index=False))
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     with open(args.out, "w") as f:
         json.dump({"summary": summary.round(4).reset_index().to_dict(orient="records"),
-                   "best_form_std": best, "frac": args.frac, "sims": args.sims}, f, indent=2)
+                   "best_form_std_coverage": best, "best_form_std_log_score": by_log,
+                   "frac": args.frac, "sims": args.sims}, f, indent=2)
     return 0
 
 

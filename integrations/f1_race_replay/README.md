@@ -43,8 +43,9 @@ in the stream's terminal. The other cars follow the same default plan the engine
 
 **With the real f1-race-replay** (when FastF1 can download position data again — it answers 401 since
 October 2026): run `python main.py --telemetry` in that repo, pick a race, then start the window. The
-real payload has no event name, so the window guesses the circuit from `circuit_length_m` (unique except
-Bahrain/Miami) — pick it in the **CIRCUIT** box if it asks.
+real payload has no event name, so the window guesses the circuit from `circuit_length_m` and the race
+distance in laps — pick it in the **CIRCUIT** box when that is ambiguous (Bahrain/Miami, Monza/Suzuka and
+Yas Marina/Albert Park share both).
 
 Options: `--circuit "Bahrain Grand Prix"`, `--sims 300` (Monte Carlo races per option; ~1–2 s per call),
 `--port`. Stream options: `--start-lap`, `--speed`, `--hz`, `--seed`.
