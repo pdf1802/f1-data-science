@@ -101,3 +101,20 @@ def test_batched_evaluate_equals_one_run_per_option(grid):
         eng._set_plan(st, i, plan)
         pos = eng.run_to_flag(st, live.setup, live.cfg, dr)["positions"][:, i]
         assert batched.loc[k, "Exp. position"] == pytest.approx(pos.mean())
+
+
+def test_state_from_real_race_uses_nothing_after_lap_n():
+    """Who retires on lap N+1 and lap N+1's track status are the future: they must not matter."""
+    from race_factory import make_race
+    laps = make_race(30, retire={"D07": 10}, sc_laps=(11,), season=2024, race="Test Grand Prix")
+    setup, cfg, state, info = eng.state_from_real_race(laps, 2024, "Test Grand Prix", at_lap=10)
+    assert "D07" in setup["drivers"]                         # completed lap 10; retiring is the future
+    assert state["sc_left"][0] == 0                          # the SC of lap 11 is not known at lap 10
+
+
+def test_pit_on_lap_n_owes_its_out_lap():
+    from race_factory import make_race
+    laps = make_race(30, pit_split=(4.0, 19.0), season=2024, race="Test Grand Prix")   # D04 pits on lap 14
+    setup, cfg, state, info = eng.state_from_real_race(laps, 2024, "Test Grand Prix", at_lap=14)
+    assert cfg["pit_loss"] - 6 < info["rejoin_s"]["D04"] < cfg["pit_loss"] - 2
+    assert set(info["rejoin_s"]) == set(laps[(laps.LapNumber == 14) & laps.PitInTime.notna()]["Driver"])

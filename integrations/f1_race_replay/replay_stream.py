@@ -114,6 +114,18 @@ class RaceFeed:
                         "air_temp": float(r["AirTemp"].iloc[0]) if "AirTemp" in r else None,
                         "rain_state": "RAINING" if "Rainfall" in r and r["Rainfall"].astype(bool).any() else "DRY"}
 
+        # FastF1's generated placeholder rows (e.g. where a car retired) are sent like the real
+        # replay does — flagged fastf1_generated — but are not line crossings on the timeline
+        gen = r["FastF1Generated"].fillna(False).astype(bool) if "FastF1Generated" in r else pd.Series(False, r.index)
+        acc = r["IsAccurate"].fillna(False).astype(bool) if "IsAccurate" in r else pd.Series(True, r.index)
+        self.generated = {d: [{"lap": int(x.LapNumber), "time_s": -1.0, "end_time_s": float(x.end),
+                               "line_time_s": float(x.end), "replay_end_time_s": float(x.end - self.t0),
+                               "replay_line_time_s": float(x.end - self.t0), "tyre": TYRE_INT.get(str(x.Compound), -1),
+                               "tyre_life": 0, "is_pit_entry": False, "is_pit_affected": False, "is_out_lap": False,
+                               "fastf1_generated": True, "is_accurate": False, "source": "official"}
+                              for x in g.itertuples()] for d, g in r[gen].groupby("Driver")}
+        r = r[~gen]
+
         # one timeline per driver, on the REPLAY clock (0 = race start), lap by lap
         self.tl: dict[str, dict] = {}
         for d, g in r.groupby("Driver"):
@@ -128,8 +140,10 @@ class RaceFeed:
                 "pit_in": g["PitInTime"].notna().tolist(),
                 "pit_out": g["PitOutTime"].notna().tolist(),
                 "time_s": [float(x) if pd.notna(x) else -1.0 for x in g["lt"]],
+                "accurate": acc[g.index].tolist(),
                 "source": ["official"] * len(g),
             }
+        self.r = r
         # track status by (leader) lap, like f1-race-replay's status_laps
         lead_rows = r[r["Position"] == 1].drop_duplicates("LapNumber").set_index("LapNumber")["TrackStatus"]
         self.status = {int(k): _status_code(v) for k, v in lead_rows.items()}
@@ -168,9 +182,10 @@ class RaceFeed:
                 "replay_end_time_s": line, "replay_line_time_s": line,               # replay clock
                 "tyre": tl["tyre"][k], "tyre_life": tl["life"][k],
                 "is_pit_entry": bool(tl["pit_in"][k]), "is_pit_affected": bool(tl["pit_in"][k]),
-                "is_out_lap": bool(tl["pit_out"][k]), "source": tl["source"][k],
+                "is_out_lap": bool(tl["pit_out"][k]), "fastf1_generated": False,
+                "is_accurate": bool(tl["accurate"][k]), "source": tl["source"][k],
             })
-        return out
+        return out + self.generated.get(d, [])
 
     def payload(self, t: float) -> dict:
         prog = {d: self._progress(d, t) for d in self.tl}
@@ -210,7 +225,13 @@ class RaceFeed:
         }
 
     def _status_now(self, lead_lap: int) -> str:
-        return self.status.get(lead_lap, "1")
+        """
+        Track status right now. The Parquet only has one status string per lap, so a Safety Car
+        that comes out mid-lap would be visible from the START of that lap — before it happened.
+        Report what the leader's last COMPLETED lap showed instead: up to a lap late, never early.
+        (The real replay knows the exact times.)
+        """
+        return self.status.get(lead_lap - 1, "1")
 
     def _status_known(self, lap: int, upto: int) -> bool:
         return True                                               # real race: precomputed for every lap
@@ -231,14 +252,16 @@ class TakeControlFeed(RaceFeed):
         if not 1 <= N < L - 1:
             raise ValueError(f"--take-control must be between 1 and {L - 2}")
         r = self.r
-        # what each car runs on lap N+1 and which compounds it has used (laps ≤ N)
+        # what each car that completed lap N runs on lap N+1, and which compounds it has used
+        now = r[r["LapNumber"] == N].set_index("Driver")
         nxt = r[r["LapNumber"] == N + 1].set_index("Driver")
         used = r[(r["LapNumber"] <= N) & r["Compound"].isin(DRY)].groupby("Driver")["Compound"].agg(set)
         plans = {}
         self.caps = _caps()
-        for d in nxt.index:
-            c = str(nxt.loc[d, "Compound"])
-            a = int(nxt.loc[d, "TyreLife"]) if pd.notna(nxt.loc[d, "TyreLife"]) else 1
+        for d in now.index:
+            row, extra = (nxt.loc[d], 0) if d in nxt.index else (now.loc[d], 1)
+            c = str(row["Compound"])
+            a = int(row["TyreLife"]) + extra if pd.notna(row["TyreLife"]) else 1
             plans[d] = default_plan(c if c in DRY else "MEDIUM", a, used.get(d, set()), N, L, self.caps)
         setup, cfg, state, info = eng.state_from_real_race(
             r, season, race, N, {"dnf_prob_per_lap": 0.0}, future_plans="none", plans=plans)
@@ -274,11 +297,12 @@ class TakeControlFeed(RaceFeed):
             pitted = bool(live.state["n_stops"][0, i] > stops0[i])
             tl["lap"].append(lap)
             tl["line"].append(self.T0 + float(cum1[i]))
+            tl["accurate"].append(True)
             tl["tyre"].append(int(comp0[i]))
             tl["life"].append(int(age0[i]))
             tl["pit_in"].append(pitted)
             tl["pit_out"].append(bool(tl["pit_in"][-2]) if len(tl["pit_in"]) > 1 else False)
-            tl["time_s"].append(float(cum1[i] - cum0[i]))
+            tl["time_s"].append(tl["line"][-1] - tl["line"][-2])   # includes a pending out-lap loss
             tl["source"].append("simulated")
         self.status[lap] = "4" if ev["safety_car"] else "1"
         if ev["sc_deployed"]:
@@ -311,6 +335,7 @@ class TakeControlFeed(RaceFeed):
     # ── commands ────────────────────────────────────────────────────────────
     def command(self, cmd: dict, t: float) -> str:
         """Apply a client command at replay time t; returns a log line."""
+        self._run_until(t)                                        # the car may have just started a lap
         d = str(cmd.get("driver", "")).upper()
         if d not in self.live.setup["drivers"]:
             return self._say(f"{d or '?'}: not in the simulated race")
@@ -352,6 +377,11 @@ class TakeControlFeed(RaceFeed):
                                "plans": {d: self.live.plan(d) for d in self.live.setup["drivers"]},
                                "log": self.log[-12:]}
         return out
+
+    def _status_now(self, lead_lap: int) -> str:
+        if lead_lap > self.N:                                     # the engine decides an SC at the start of a lap
+            return self.status.get(lead_lap, "1")
+        return super()._status_now(lead_lap)
 
     def _status_known(self, lap: int, upto: int) -> bool:
         return lap <= upto                                        # simulated laps: only once run

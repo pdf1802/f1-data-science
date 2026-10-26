@@ -237,10 +237,12 @@ class EngineerWorker(QThread):
                 self.call_ready.emit(call, time.perf_counter() - t0)
 
     def stop(self):
+        """Ask the loop to end and wait for it — a call in progress (up to a few seconds at 2,000
+        sims) is allowed to finish: destroying a running QThread aborts the process."""
         with self._cond:
             self._running = False
             self._cond.notify()
-        self.wait(5000)
+        self.wait()
 
 
 # ── widgets ──────────────────────────────────────────────────────────────────

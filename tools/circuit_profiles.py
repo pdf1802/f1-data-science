@@ -92,11 +92,32 @@ def build_profiles(laps: pd.DataFrame) -> dict:
     return profiles
 
 
+_OVERRIDE: dict | None = None        # set by use_profiles() — leave-one-race-out backtests
+
+
 def load_profiles() -> dict:
+    if _OVERRIDE is not None:
+        return _OVERRIDE
     if not os.path.isfile(PROFILE_PATH):
         return {}
     with open(PROFILE_PATH) as f:
         return json.load(f)
+
+
+class use_profiles:
+    """Context manager: profile_for() answers from `profiles` instead of circuit_profiles.json."""
+
+    def __init__(self, profiles: dict):
+        self.profiles = profiles
+
+    def __enter__(self):
+        global _OVERRIDE
+        self._old, _OVERRIDE = _OVERRIDE, self.profiles
+        return self
+
+    def __exit__(self, *exc):
+        global _OVERRIDE
+        _OVERRIDE = self._old
 
 
 def profile_for(event: str | None) -> dict | None:

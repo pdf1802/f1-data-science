@@ -34,14 +34,19 @@ DIRTY_AIR_PENALTY = 0.20  # s/lap when within DRS_WINDOW of the car ahead
 PIT_NOISE_STD = 0.8       # s — stop-to-stop variation
 # s/lap — how far a driver's pace can drift from what has been seen so far. Calibrated on
 # 36 real races (tools/backtest.py): at 0.25 the simulated 10–90 % range contains the real
-# finishing position 78.9 % of the time (calibrated); 0.12 gives 67 % (overconfident),
-# 0.40 gives 87 % (too cautious). The log score is flat from 0.25 to 0.40.
+# finishing position 80.1 % of the time (calibrated); 0.12 gives 68 % (overconfident),
+# 0.40 gives 88 % (too cautious). The log score is best at 0.30 (−1.87 vs −1.90 at 0.25):
+# a small difference; we choose the value whose 80 % intervals mean 80 %.
 RACE_FORM_STD = 0.25
 START_STD = 0.6           # s — lap-1 chaos: launch, first-corner positioning
 SC_LAP_FACTOR = 1.35      # SC lap ≈ 35 % slower than a racing lap
 SC_COMPRESS = 0.35        # each SC lap keeps 35 % of every gap…
 SC_MIN_GAP = 0.6          # …but cars queue no closer than this
 SC_PIT_RATIO = PIT_COST_SC / PIT_COST_GREEN   # a stop under SC costs ~72 % of a green one
+# Share of a stop's time loss that falls on the OUT-lap: median of 799 green-flag stops in the
+# 36 dry races (in-lap +4.3 s, out-lap +19.2 s over the driver's median lap). The engine charges
+# a stop on the in-lap; a real race cut at the end of an in-lap still owes the out-lap part.
+OUT_LAP_SHARE = 0.82
 MAX_STOPS = 4
 NO_STOP = 10_000
 BIG = 1e9
@@ -488,6 +493,8 @@ def state_from_real_race(laps: pd.DataFrame, season: int, race: str, at_lap: int
     r = laps[(laps["Season"] == season) & (laps["Race"] == race)].copy()
     if r.empty:
         raise ValueError(f"No laps for {season} {race}")
+    if "FastF1Generated" in r:            # FastF1's placeholder rows (e.g. at a retirement) are not laps
+        r = r[~r["FastF1Generated"].fillna(False).astype(bool)]
     L = int(r["TotalLaps"].iloc[0])
     if not 1 <= at_lap < L:
         raise ValueError(f"at_lap must be in 1..{L - 1}")
@@ -495,10 +502,7 @@ def state_from_real_race(laps: pd.DataFrame, season: int, race: str, at_lap: int
     r["T"] = _sec(r["Time"])
     now = r[r["LapNumber"] == at_lap].dropna(subset=["T", "Position"]).sort_values("Position")
     nxt_rows = r[r["LapNumber"] == at_lap + 1].set_index("Driver")
-    if len(nxt_rows):                                                    # history: still running next lap
-        drivers = [d for d in now["Driver"] if d in nxt_rows.index]
-    else:                                                                # live: lap at_lap+1 not run yet
-        drivers = list(now["Driver"])
+    drivers = list(now["Driver"])         # every car that completed lap N (who retires later is the future)
     now = now.set_index("Driver").loc[drivers]
 
     cfg = resolve_config({**(config or {}), "circuit": race, "total_laps": L})
@@ -550,18 +554,31 @@ def state_from_real_race(laps: pd.DataFrame, season: int, race: str, at_lap: int
 
     setup = build_setup(drivers, [str(now.loc[d, "Team"]) for d in drivers], pace, comp, age, plans_out, cfg)
     setup["fuel_in_model"] = fuel_in_model
+    if track_status is None:              # the leader's lap N: known at the end of lap N (lap N+1 is not)
+        track_status = str(now.loc[drivers[0], "TrackStatus"])
+    sc_now = str(track_status).find("4") >= 0
+
+    # A car that pitted at the end of lap N has paid only the in-lap part of its stop; the
+    # engine charges stops on the in-lap, so add what the out-lap still owes (where it rejoins).
+    loss = cfg.get("pit_loss", PIT_COST_GREEN) * (SC_PIT_RATIO if sc_now else 1.0)
+    ref = hist.groupby("Driver")["LT"].median()
+    rejoin = {}
+    for d in now.index[now["PitInTime"].notna()]:
+        lt = now.loc[d, "LT"]
+        paid = lt - ref[d] if pd.notna(lt) and d in ref.index else (1 - OUT_LAP_SHARE) * loss
+        rejoin[d] = float(np.clip(loss - paid, 0.0, loss))
+    t_line = now["T"].to_numpy(float)
+
     state = initial_state(setup, 1)
     state["lap"] = at_lap
-    state["cum"] = (now["T"].to_numpy(float) - now["T"].min())[None, :]
+    state["cum"] = (t_line - t_line.min() + np.array([rejoin.get(d, 0.0) for d in drivers]))[None, :]
     stops_done = r[(r["LapNumber"] <= at_lap) & r["PitInTime"].notna()].groupby("Driver").size()
     state["n_stops"] = np.array([[int(stops_done.get(d, 0)) for d in drivers]])
-    if track_status is None:
-        status_row = nxt_rows.loc[drivers[0]] if drivers[0] in nxt_rows.index else now.loc[drivers[0]]
-        track_status = str(status_row["TrackStatus"])
-    if str(track_status).find("4") >= 0:                                 # SC already out
+    if sc_now:                                                           # SC already out
         state["sc_left"] = np.array([2])
     info = {"season": season, "race": race, "at_lap": at_lap, "total_laps": L,
-            "pace": dict(zip(drivers, np.round(pace, 4))), "base_laptime": base}
+            "pace": dict(zip(drivers, np.round(pace, 4))), "base_laptime": base,
+            "rejoin_s": {d: round(v, 1) for d, v in rejoin.items()}}
     return setup, cfg, state, info
 
 

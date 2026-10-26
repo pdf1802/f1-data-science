@@ -53,7 +53,10 @@ TYRE_NAMES = {**COMPOUND_NAMES, 3: "INTERMEDIATE", 4: "WET"}   # f1-race-replay'
 DEFAULT_CAPS = {"SOFT": 19, "MEDIUM": 28, "HARD": 34}   # p90 tyre age in the training data
 ALERT_GAP = 3.0            # s — undercut alert range
 MIN_CALL_LAP = 3           # no calls on the opening laps (pace not known yet)
-OUT_FACTOR, OUT_MARGIN = 1.5, 40.0   # no line crossing for 1.5 laps + 40 s → out of the race
+# Out of the race: since the car's last line crossing, at least OUT_WITNESSES other cars have
+# each crossed the line OUT_FIELD_LAPS times (≥ 2 full laps went by; even a pit stop or a repair
+# takes less). Counting the field's laps instead of seconds keeps everyone in during a red flag.
+OUT_FIELD_LAPS, OUT_WITNESSES = 3, 3
 STOPPED_S = 20.0           # s of replay time without moving → parked (retired), unless red flag
 STAY = "Stay out (default plan)"
 OPTION_COLUMNS = ["Option", "P(win)", "P(podium)", "P(points)", "Exp. position",
@@ -71,13 +74,51 @@ def _num(v) -> float | None:
     return v if np.isfinite(v) else None
 
 
-def line_time(entry: dict) -> float | None:
-    """When the car crossed the line at the end of this lap, on the replay clock."""
-    for key in ("replay_line_time_s", "replay_end_time_s", "end_time_s"):
+def _has_replay_clock(entry: dict) -> bool:
+    return _num(entry.get("replay_line_time_s")) is not None or _num(entry.get("replay_end_time_s")) is not None
+
+
+def line_time(entry: dict, offset: float = 0.0) -> float | None:
+    """
+    When the car crossed the line at the end of this lap, on the replay clock.
+    `offset` (see clock_offset) is subtracted from end_time_s when the entry has no replay_* field.
+    """
+    for key in ("replay_line_time_s", "replay_end_time_s"):
         v = _num(entry.get(key))
         if v is not None:
             return v
-    return None
+    v = _num(entry.get("end_time_s"))
+    return None if v is None else v - offset
+
+
+def is_lap(entry: dict) -> bool:
+    """FastF1 generates placeholder rows (e.g. where a car retired): no lap was completed there."""
+    return entry.get("lap") is not None and not entry.get("fastf1_generated")
+
+
+def clock_offset(payload: dict) -> float:
+    """
+    Seconds between the FastF1 session clock and the replay clock, for entries without replay_*
+    fields. f1-race-replay adds those fields when it can align the two clocks; when it cannot,
+    end_time_s is session time (~1 h ahead) and every lap would look unfinished. Estimated from
+    where the cars are now: a car on lap c at rel_dist r crossed the line ending lap c-1 about
+    r × (its lap c-1 time) ago. 0 when no entry needs it, or when the clocks already agree
+    (laps rebuilt from frames carry end_time_s on the replay clock).
+    """
+    lap_times = payload.get("lap_times") or {}
+    t_now, est = payload_time(payload), []
+    for d, fd in ((payload.get("frame") or {}).get("drivers") or {}).items():
+        c, r = _num(fd.get("lap")), _num(fd.get("rel_dist"))
+        if c is None or r is None:
+            continue
+        prev = next((e for e in lap_times.get(d) or [] if e.get("lap") == int(c) - 1), None)
+        if prev is None or _has_replay_clock(prev):
+            continue
+        end, lt = _num(prev.get("end_time_s")), _num(prev.get("time_s"))
+        if end is not None and lt and lt > 0:
+            est.append(end - (t_now - r * lt))
+    off = float(np.median(est)) if est else 0.0
+    return off if abs(off) > 60 else 0.0
 
 
 def payload_time(payload: dict) -> float:
@@ -99,15 +140,35 @@ def track_status(payload: dict) -> str:
     return "1" if s in ("GREEN", "") else s
 
 
-def completed_laps(payload: dict, driver: str, t_now: float | None = None) -> list[tuple[int, float]]:
+def completed_laps(payload: dict, driver: str, t_now: float | None = None,
+                   offset: float | None = None) -> list[tuple[int, float]]:
     """(lap, line time) of every lap `driver` has completed by now — cheap, no DataFrame."""
     t_now = payload_time(payload) if t_now is None else t_now
+    offset = clock_offset(payload) if offset is None else offset
     out = []
     for e in (payload.get("lap_times") or {}).get(driver) or []:
-        t = line_time(e)
-        if t is not None and t <= t_now and e.get("lap") is not None:
+        t = line_time(e, offset)
+        if t is not None and t <= t_now and is_lap(e):
             out.append((int(e["lap"]), t))
     return sorted(out)
+
+
+def out_by_field(crossings: dict[str, np.ndarray]) -> set:
+    """Cars whose last crossing is followed by OUT_FIELD_LAPS crossings of OUT_WITNESSES other cars."""
+    out = set()
+    for d, ts in crossings.items():
+        if not len(ts):
+            continue
+        last = ts.max()
+        counts = sorted((int((o > last).sum()) for e, o in crossings.items() if e != d), reverse=True)
+        if len(counts) >= OUT_WITNESSES and counts[OUT_WITNESSES - 1] >= OUT_FIELD_LAPS:
+            out.add(d)
+    return out
+
+
+def crossings_from_payload(payload: dict, t_now: float, offset: float) -> dict[str, np.ndarray]:
+    return {d: np.array([t for e in es if is_lap(e) and (t := line_time(e, offset)) is not None and t <= t_now])
+            for d, es in (payload.get("lap_times") or {}).items()}
 
 
 def status_by_lap(payload: dict, upto_lap: int) -> dict[int, str]:
@@ -126,7 +187,8 @@ def status_by_lap(payload: dict, upto_lap: int) -> dict[int, str]:
     return out
 
 
-def laps_from_payload(payload: dict, circuit: str, total_laps: int) -> tuple[pd.DataFrame, float]:
+def laps_from_payload(payload: dict, circuit: str, total_laps: int,
+                      offset: float | None = None) -> tuple[pd.DataFrame, float]:
     """
     f1-race-replay payload → (laps completed so far, FastF1-shaped; current replay time).
     The replay sends the lap times of the WHOLE race in every payload; only laps
@@ -134,11 +196,12 @@ def laps_from_payload(payload: dict, circuit: str, total_laps: int) -> tuple[pd.
     `Time` is the line time on the replay clock.
     """
     t_now = payload_time(payload)
+    offset = clock_offset(payload) if offset is None else offset
     rows = []
     for code, entries in (payload.get("lap_times") or {}).items():
         for e in entries:
-            end = line_time(e)
-            if end is None or end > t_now or e.get("lap") is None:
+            end = line_time(e, offset)
+            if end is None or end > t_now or not is_lap(e):
                 continue
             lt = _num(e.get("time_s"))
             rows.append({
@@ -175,19 +238,13 @@ def _recent_lap(g: pd.DataFrame, fallback: float) -> float:
 
 def running_drivers(laps: pd.DataFrame, t_now: float, frame_drivers: dict | None = None,
                     stopped: set | None = None) -> list[str]:
-    """Cars that have crossed the line recently enough to still be in the race (and are not parked)."""
+    """Cars still in the race: not left behind by the field (out_by_field) and not parked."""
     if laps.empty:
         return []
-    field = _sec(laps.loc[laps["LapNumber"] > 1, "LapTime"]).median()
-    field = float(field) if np.isfinite(field) else 95.0
-    out = []
-    for d, g in laps.groupby("Driver"):
-        if (frame_drivers and d not in frame_drivers) or (stopped and d in stopped):
-            continue
-        last_t = float(_sec(g["Time"]).max())
-        if t_now - last_t <= OUT_FACTOR * _recent_lap(g, field) + OUT_MARGIN:
-            out.append(d)
-    return out
+    crossings = {d: _sec(g["Time"]).to_numpy() for d, g in laps.groupby("Driver")}
+    gone = out_by_field(crossings)
+    return [d for d in crossings
+            if d not in gone and not (frame_drivers and d not in frame_drivers) and not (stopped and d in stopped)]
 
 
 def snapshot_at_lap(laps: pd.DataFrame, n: int, t_now: float, frame_drivers: dict | None = None,
@@ -217,6 +274,10 @@ def snapshot_at_lap(laps: pd.DataFrame, n: int, t_now: float, frame_drivers: dic
         cur_lap = int(_num(fd.get("lap")) or last_lap + 1)
         rel = _num(fd.get("rel_dist"))
 
+        # in the pit lane before crossing line n: the stop ends lap n (its out-lap loss is added
+        # by state_from_real_race) and the car leaves on the next compound
+        pitting = bool(fd.get("in_pit")) and last_lap < n and cur_lap <= n
+
         # line time at the end of lap n
         if not (g["LapNumber"] == n).any():
             if last_lap > n:                                  # gap in the data: back off from a later lap
@@ -227,7 +288,8 @@ def snapshot_at_lap(laps: pd.DataFrame, n: int, t_now: float, frame_drivers: dic
                 t_n = max(last_t + (n - last_lap) * pace, t_now + 0.1)
             estimated.append(d)
             extra.append({"Driver": d, "LapNumber": n, "LapTime": pd.NaT, "Time": pd.to_timedelta(t_n, unit="s"),
-                          "Compound": last["Compound"], "TyreLife": np.nan, "PitInTime": pd.NaT,
+                          "Compound": last["Compound"], "TyreLife": np.nan,
+                          "PitInTime": pd.to_timedelta(t_n, unit="s") if pitting else pd.NaT,
                           "PitOutTime": pd.NaT, "Team": "", "TrackStatus": status_now})
 
         # tyres for lap n+1
@@ -235,6 +297,9 @@ def snapshot_at_lap(laps: pd.DataFrame, n: int, t_now: float, frame_drivers: dic
         f_comp, f_life = tyre_name(fd.get("tyre")), _num(fd.get("tyre_life"))
         if len(nxt):
             comp, age = nxt.iloc[0]["Compound"], nxt.iloc[0]["TyreLife"]
+        elif pitting:
+            old = f_comp or str(last["Compound"])
+            comp, age = ("HARD" if old != "HARD" else "MEDIUM"), 1
         elif f_comp and f_life and cur_lap <= n + 1:
             comp, age = f_comp, f_life + (n + 1 - cur_lap)
         else:
@@ -349,7 +414,8 @@ class RaceEngineer:
             self.reset()
         self._t_seen = t_now
         self._track_motion(payload, t_now)
-        mine = completed_laps(payload, self.driver, t_now)
+        offset = clock_offset(payload)
+        mine = completed_laps(payload, self.driver, t_now, offset)
         if not mine:
             return None
         n, my_t = mine[-1]
@@ -358,28 +424,25 @@ class RaceEngineer:
             self.last_lap_done = max(self.last_lap_done, n)
             return None
         if n <= self.last_lap_done:
-            return self._check_out(payload, t_now, my_t)
+            return self._check_out(payload, t_now, offset)
         self._out_reported = False
         if "5" in status:                                   # red flag: wait for the restart
             return None
         self.last_lap_done = n
         if n < MIN_CALL_LAP:
             return None
-        laps, t_now = laps_from_payload(payload, self.circuit or "Unknown", self.total_laps)
+        laps, t_now = laps_from_payload(payload, self.circuit or "Unknown", self.total_laps, offset)
         self.last_call = self.analyse(laps, n, t_now, payload)
         return self.last_call
 
-    def _check_out(self, payload: dict, t_now: float, my_t: float) -> dict | None:
-        """One 'not running' call when the followed driver stops crossing the line."""
-        if self._out_reported:
+    def _check_out(self, payload: dict, t_now: float, offset: float) -> dict | None:
+        """One 'not running' call when the followed driver stops crossing the line (never under red flag)."""
+        if self._out_reported or "5" in track_status(payload):
             return None
-        recent = [e.get("time_s") for e in (payload.get("lap_times") or {}).get(self.driver, [])
-                  if (_num(e.get("time_s")) or 0) > 0 and (line_time(e) or np.inf) <= t_now][-3:]
-        pace = float(np.median(recent)) if recent else 95.0
-        parked = self.driver in self.stopped(t_now) and "5" not in track_status(payload)
-        if t_now - my_t <= OUT_FACTOR * pace + OUT_MARGIN and not parked:   # cheap check first
-            return None
-        laps, t_now = laps_from_payload(payload, self.circuit or "Unknown", self.total_laps)
+        parked = self.driver in self.stopped(t_now)
+        if not parked and self.driver not in out_by_field(crossings_from_payload(payload, t_now, offset)):
+            return None                                     # cheap check first: still lapping
+        laps, t_now = laps_from_payload(payload, self.circuit or "Unknown", self.total_laps, offset)
         if self.driver in running_drivers(laps, t_now, (payload.get("frame") or {}).get("drivers"),
                                           self.stopped(t_now)):
             return None

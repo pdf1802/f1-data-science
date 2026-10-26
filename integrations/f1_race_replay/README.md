@@ -57,8 +57,15 @@ Options: `--circuit "Bahrain Grand Prix"`, `--sims 300` (Monte Carlo races per o
    their line time is **estimated** from where they are now (`rel_dist` in the frame) and their recent
    pace. They are marked `~` in the tower. *(The first version took N from the leader and silently
    dropped every car that had not completed lap N yet — "ALO is not running".)*
-2. **Who is still racing** — a car is out when it has not crossed the line for 1.5 laps + 40 s, or has
-   not moved for 20 s (not under a red flag).
+   - A car in the pit lane (`in_pit`) that has not crossed the line yet is treated as stopping at the end
+     of lap N, onto the next compound.
+   - A stop costs ~23 s, but only ~4 s of it falls on the in-lap; ~19 s is the out-lap (measured on 799
+     green-flag stops). The engine charges stops on the in-lap, so a car that pitted at the end of lap N
+     gets the rest added now — the tower shows where it will rejoin.
+2. **Who is still racing** — a car is out when three other cars have each completed three laps since it
+   last crossed the line, or when it has not moved for 20 s (not under a red flag). Counting the field's
+   laps instead of seconds keeps everyone in through a red flag. FastF1's generated placeholder rows
+   (`fastf1_generated`, e.g. where a car retired) are not line crossings.
 3. **Pace** — each driver's median racing lap so far, corrected for fuel and tyre state with Module 1.
 4. **Rivals' plans** — one more stop when their tyre reaches the age range the data covers (p90 age per
    compound), or when the two-compound rule is still open; shown in the tower as *Next stop (assumed)*.
@@ -74,12 +81,18 @@ The engineer only uses laps whose line time is ≤ the current replay time, cuts
 the present, and never looks at the frame of a car beyond where it is now. A test rewrites the future
 part of a payload and checks that the call does not change.
 
+The stand-in stream itself has one track status per lap (the Parquet has nothing finer), so its live
+`track_status` reports the leader's last *completed* lap: a Safety Car shows up to a lap late, never
+early. The real replay knows the exact times.
+
 ### Two clocks
 
 `frame.t` is the **replay clock** (0 = race start). In `lap_times`, `end_time_s` / `line_time_s` are the
 **FastF1 session clock**; f1-race-replay adds `replay_end_time_s` / `replay_line_time_s` aligned to the
 replay clock. The engineer uses the replay-clock fields first (laps rebuilt from frames only carry
-`end_time_s`, already on the replay clock). The stand-in stream reproduces both clocks, so this is tested.
+`end_time_s`, already on the replay clock). If f1-race-replay could not align its clocks and sends no
+`replay_*` fields, the engineer estimates the offset itself (where each car is now vs when it finished its
+previous lap). The stand-in stream reproduces both clocks, so all three cases are tested.
 
 ### Threads
 
@@ -101,8 +114,9 @@ change — a test checks that boxing mid-lap gives exactly the race you would ge
 
 Sent by f1-race-replay and used here: `frame.t`, `frame.drivers[code].{position, lap, rel_dist, dist,
 tyre, tyre_life, in_pit}`, `frame.weather`, `track_status`, `session_data.{time_s, total_laps}`,
-`lap_times[code][].{lap, time_s, end_time_s, replay_end_time_s, tyre, tyre_life, is_pit_entry,
-is_out_lap}`, `status_laps`, `circuit_length_m`. Tyre ints: SOFT 0, MEDIUM 1, HARD 2, INTERMEDIATE 3, WET 4.
+`lap_times[code][].{lap, time_s, replay_line_time_s, replay_end_time_s, end_time_s, tyre, tyre_life,
+is_pit_entry, is_out_lap, fastf1_generated}`, `status_laps`, `circuit_length_m`. Tyre ints: SOFT 0,
+MEDIUM 1, HARD 2, INTERMEDIATE 3, WET 4.
 
 Not in the real payload: `session_info: {event_name, year}` (proposed upstream — see
 `UPSTREAM_PROPOSAL.md`) and `take_control` (stand-in stream only). Positions in the stand-in stream are
@@ -125,9 +139,11 @@ thread, and is skipped if PySide6 is not installed.
 - Rivals follow a simple default plan, not their real strategy — the call is "given what we assume
   they do".
 - Dry races only: on INTERMEDIATE / WET the window says so and makes no call.
-- Line times of cars behind are estimates. Measured on 2,691 estimates (Bahrain 2023, Monza 2024,
-  Monaco 2025, every lap): median error 0.17 s and under 2 s nine times out of ten when that car is not
-  stopping; 0.02 s for cars within 10 s of the line; median 4.7 s when the estimated lap contains a pit
-  stop (the stop has not happened yet when the call is made).
-- Take-control: no DNFs, no new weather, and a car that pitted on lap N gets its out-lap at racing speed.
+- Line times of cars behind are estimates (`python -m integrations.f1_race_replay.estimate_accuracy`,
+  2,736 estimates in Bahrain 2023, Monza 2024 and Monaco 2025). From pace alone — nothing the engineer
+  could not know — the median error is **0.48 s** (90 % under 3.0 s) when that car does not stop in the
+  lap, but **16 s** when it does (the stop is still in the future). With the stand-in's `rel_dist` the
+  median drops to 0.17 s, an optimistic bound: that `rel_dist` is elapsed time over the lap's real
+  duration. Real frames give distance along the lap, so expect something in between.
+- Take-control: no DNFs and no new weather.
 - Model era: 2022–2025 cars and rules; 2026 is excluded on purpose.

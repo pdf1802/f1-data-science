@@ -5,7 +5,8 @@ What matters for a live tool, and what these tests pin down:
 - every running car is in the call, including cars that have not crossed the
   line yet and lapped cars (the old bug dropped them: "ALO is not running");
 - nothing from the future is used, although every payload carries the whole race;
-- exactly one call per lap of the followed driver, and the same keys every time.
+- at most one call per lap of the followed driver (one per lap when payloads keep coming), and the
+  same keys every time.
 """
 import copy
 
@@ -199,3 +200,59 @@ def test_default_plan():
     assert re_.default_plan("SOFT", 18, {"SOFT"}, 20, 57) == [(21, "HARD")]      # at the edge of the data
     assert re_.default_plan("HARD", 5, {"SOFT"}, 40, 57) == []                     # reaches the flag, rule met
     assert re_.default_plan("HARD", 5, {"HARD"}, 50, 57) == [(54, "MEDIUM")]       # rule not met yet
+
+
+# ── found by the independent review ──────────────────────────────────────────
+def test_after_a_red_flag_nobody_is_dropped():
+    """A 25-minute stoppage: the first call after the restart must still have all 20 cars."""
+    feed = RaceFeed(make_race(30, red_flag=(15 * 91.0, 1500.0)), 2099, RACE)
+    eng = RaceEngineer("D05", RACE, n_sims=10)
+    red_lap = next(lap for lap, st in zip(feed.r[feed.r.Driver == "D05"].LapNumber, feed.r[feed.r.Driver == "D05"].TrackStatus)
+                   if st == "5")
+    calls = stream(feed, eng, line(feed, "D05", int(red_lap)) - 60, line(feed, "D05", int(red_lap)) + 2,
+                   dt=2.0, override={"track_status": "1"})   # the real replay says green after the restart
+    first = [c for c in calls if c["lap"] == red_lap]
+    assert first and first[0]["running"] and len(first[0]["standings"]) == 20
+
+
+def test_fastf1_placeholder_row_is_not_a_lap():
+    """A retired car's generated row (no lap time, 150 s later) must not trigger a call for that lap."""
+    feed = RaceFeed(make_race(30, retire={"D05": 12}, placeholder=True), 2099, RACE)
+    eng = RaceEngineer("D05", RACE, n_sims=10)
+    calls = stream(feed, eng, line(feed, "D05", 11) - 1, line(feed, "D00", 18), dt=2.0)
+    assert [c["lap"] for c in calls if c["running"]] == [10, 11, 12]
+    assert len([c for c in calls if not c["running"]]) == 1
+    laps, _ = re_.laps_from_payload(feed.payload(1e5), RACE, 30)
+    assert laps[laps.Driver == "D05"]["LapNumber"].max() == 12
+
+
+def test_a_car_in_the_pit_lane_is_charged_its_stop():
+    """A rival in the pit lane before crossing line N: it stops at the end of lap N, on new tyres."""
+    feed = RaceFeed(make_race(30, pit_split=(4.0, 19.0)), 2099, RACE)  # D04 boxes at the end of lap 14
+    t = line(feed, "D04", 14) - 0.5                                     # D04 in the pit lane, line 14 not crossed
+    leader_done = [d for d in feed.tl if line(feed, d, 14) < t]
+    me = max(leader_done, key=lambda d: line(feed, d, 14))             # someone who just crossed line 14
+    eng = RaceEngineer(me, RACE, n_sims=10)
+    eng.last_lap_done = 13
+    p = feed.payload(t)
+    assert p["frame"]["drivers"]["D04"]["in_pit"]
+    c = eng.update(p)
+    row = c["standings"].set_index("Driver").loc["D04"]
+    assert "D04" in c["estimated"] and row["Compound"] == "HARD" and row["TyreAge"] == 0
+    gap_real = line(feed, "D04", 15) - min(line(feed, d, 15) for d in feed.tl)
+    assert abs(row["Gap"] - gap_real) < 6.0                            # where it really rejoined, roughly
+
+
+def test_clocks_are_aligned_when_the_replay_could_not():
+    """Without replay_* fields, end_time_s is the session clock (~1 h ahead): estimate the offset."""
+    feed = RaceFeed(make_race(20), 2099, RACE)
+    t = line(feed, "D07", 9) + 30
+    p = copy.deepcopy(feed.payload(t))
+    for entries in p["lap_times"].values():
+        for e in entries:
+            e.pop("replay_end_time_s"), e.pop("replay_line_time_s")
+    assert re_.clock_offset(p) == pytest.approx(feed.t0, abs=2.0)
+    a, _ = re_.laps_from_payload(feed.payload(t), RACE, 20)
+    b, _ = re_.laps_from_payload(p, RACE, 20)
+    far = lambda df: set(map(tuple, df.loc[(df.Time.dt.total_seconds() - t).abs() > 3, ["Driver", "LapNumber"]].values))
+    assert far(a) == far(b)

@@ -50,11 +50,21 @@ def test_positions_follow_progress_on_track(feed):
     assert drv["D00"]["lap"] - drv["D19"]["lap"] >= 1
 
 
-def test_safety_car_lap_is_reported(feed):
-    t = (line(feed, "D00", 5) + line(feed, "D00", 6)) / 2         # leader on lap 6
-    p = feed.payload(t)
-    assert p["track_status"] == "4"
-    assert {"status": "4", "start_lap": 6, "end_lap": 6} in p["status_laps"]
+def test_safety_car_is_reported_late_never_early(feed):
+    """The Parquet has one status per lap: report the leader's last COMPLETED lap (never ahead of time)."""
+    on_sc_lap = (line(feed, "D00", 5) + line(feed, "D00", 6)) / 2  # leader on lap 6, the SC lap
+    after = (line(feed, "D00", 6) + line(feed, "D00", 7)) / 2      # leader on lap 7: lap 6 is history
+    assert feed.payload(on_sc_lap)["track_status"] == "1"
+    assert feed.payload(after)["track_status"] == "4"
+    assert {"status": "4", "start_lap": 6, "end_lap": 6} in feed.payload(after)["status_laps"]
+
+
+def test_fastf1_placeholder_rows_are_flagged_and_not_on_the_timeline():
+    f = RaceFeed(make_race(20, retire={"D05": 12}, placeholder=True), 2099, RACE)
+    assert f.tl["D05"]["lap"][-1] == 12
+    e = f.payload(1e5)["lap_times"]["D05"]
+    gen = [x for x in e if x["fastf1_generated"]]
+    assert [x["lap"] for x in gen] == [13] and gen[0]["time_s"] == -1.0 and not gen[0]["is_accurate"]
 
 
 # ── take control ─────────────────────────────────────────────────────────────
@@ -119,6 +129,26 @@ def test_box_after_the_pit_entry_means_next_lap(laps):
     t = tl["line"][i - 1] + 0.95 * (tl["line"][i] - tl["line"][i - 1])     # 95 % into lap `lap`
     msg = tc.command({"cmd": "box", "driver": "D04", "compound": "MEDIUM"}, t)
     assert f"lap {lap + 1}" in msg and "next lap" in msg
+
+
+def test_a_command_right_after_crossing_the_line_is_accepted(laps):
+    """The engine may not have run the lap the car just started: command() must step it first."""
+    tc = TakeControlFeed(laps, 2099, RACE, N, seed=2)
+    tc.payload(tc.T0 + 300)
+    lap = tc.live.lap                                              # last lap the engine has run
+    t = line(tc, "D00", lap) + 0.05                                # the leader has just finished it
+    msg = tc.command({"cmd": "box", "driver": "D00", "compound": "MEDIUM"}, t)
+    assert f"BOX lap {lap + 1}" in msg
+
+
+def test_a_car_that_pitted_on_the_take_over_lap_rejoins_behind(laps):
+    """The in-lap only carries ~4 s of a stop; the out-lap part is charged when the engine takes over."""
+    real = make_race(30, pit_split=(4.0, 19.0))
+    tc = TakeControlFeed(real, 2099, RACE, 12, seed=1)              # D02 boxes at the end of lap 12
+    tc.payload(tc.T0 + 400)
+    sim = line(tc, "D02", 13) - line(tc, "D02", 12)
+    actual = (real[(real.Driver == "D02") & (real.LapNumber == 13)]["LapTime"].dt.total_seconds().iloc[0])
+    assert abs(sim - actual) < 4.0                                 # out-lap includes the stop, as in reality
 
 
 def test_stay_out_cancels_the_planned_stops_and_bad_commands_are_refused(laps):

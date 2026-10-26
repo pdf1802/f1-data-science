@@ -82,3 +82,22 @@ def test_circuit_guess():
     name, why = guess_circuit({"circuit_length_m": 5400.0, "session_data": {"total_laps": 57}})
     assert name is None and "Bahrain" in why and "Miami" in why    # same length, same laps
     assert guess_circuit({})[0] is None
+
+
+def test_closing_waits_for_a_call_in_progress(app, monkeypatch):
+    """Destroying a QThread that is still computing aborts the process: stop() must wait it out."""
+    from integrations.f1_race_replay.race_engineer_window import EngineerWorker
+    from tools.race_engineer import RaceEngineer
+
+    def slow_update(self, payload):
+        time.sleep(6.0)                                           # longer than any fixed timeout we had (5 s)
+        return None
+
+    monkeypatch.setattr(RaceEngineer, "update", slow_update)
+    w = EngineerWorker(10)
+    w.start()
+    w.configure("D01", RACE)
+    w.submit({"lap_times": {}})
+    time.sleep(0.3)                                               # the slow call is running now
+    w.stop()
+    assert not w.isRunning()

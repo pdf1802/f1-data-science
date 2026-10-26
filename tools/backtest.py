@@ -19,9 +19,14 @@ Metrics (only drivers who were classified at the flag):
     80 % cover   share of drivers whose real position falls inside the simulated
                  10–90 % range (≈ 80 % = calibrated, much less = overconfident)
 
+In-sample vs out-of-sample. By default the trained models (Modules 1 and 2) and the
+circuit profiles have seen every race — including the second part of the race being
+backtested. `--loro` (leave one race out) retrains both modules and the profiles
+without each race before backtesting it: the honest version, ~3 minutes.
+
 It also calibrates RACE_FORM_STD (how much a driver's pace can differ from what
 was seen so far): the value whose 80 % intervals really contain ~80 % of results
-(the log score is reported too; it is flat between 0.25 and 0.4).
+(the log score is reported too; it prefers slightly wider intervals, 0.30).
 """
 
 from __future__ import annotations
@@ -78,6 +83,77 @@ def backtest_race(laps, season, race, frac=0.4, n_sims=300, form_std=None, seed=
             "cover80": float(((real >= lo) & (real <= hi)).mean())}
 
 
+def train_without(laps: pd.DataFrame, season: int, race: str, out_dir: str) -> dict:
+    """
+    Modules 1 + 2 (V3.1 pipeline, no CV) and circuit profiles fitted on every race but one.
+    Models are written to out_dir (load with F1_MODEL_DIR); the profiles are returned.
+    """
+    import joblib
+
+    from tools import training
+    from tools.circuit_profiles import build_profiles
+    from tools.shared import COMPOUND_MAP
+    rest = laps[~((laps["Season"] == season) & (laps["Race"] == race))]
+    dry, _ = training.dry_races(rest)
+    circuits = training.circuit_list(dry)
+    physics = training.estimate_tyre_physics(dry)
+    lap_df, enc = training.build_lap_dataset(dry, circuits=circuits)
+    lap_model = training.make_lap_model().fit(lap_df[training.LAP_MODEL_FEATURES], lap_df["LapDelta"])
+    ovt = training.build_overtake_dataset(dry, circuits=circuits)
+    ovt_model = training.make_overtake_model().fit(ovt[training.OVT_MODEL_FEATURES], ovt["Overtake"])
+    os.makedirs(out_dir, exist_ok=True)
+    joblib.dump(lap_model, os.path.join(out_dir, "lap_time_model.pkl"))
+    joblib.dump(ovt_model, os.path.join(out_dir, "overtaking_model.pkl"))
+    joblib.dump(enc, os.path.join(out_dir, "team_encoder.pkl"))
+    for name, obj in (("compound_map.json", COMPOUND_MAP), ("circuits.json", circuits),
+                      ("deg_tail.json", training.deg_tail(lap_df, physics))):
+        with open(os.path.join(out_dir, name), "w") as f:
+            json.dump(obj, f)
+    return build_profiles(rest)
+
+
+def run_loro(laps: pd.DataFrame, form_std: float = eng.RACE_FORM_STD, n_sims=300, frac=0.4,
+             verbose: bool = True) -> pd.DataFrame:
+    """Leave-one-race-out: every race backtested with models and profiles that never saw it."""
+    import tempfile
+
+    from tools import shared
+    from tools.circuit_profiles import use_profiles
+    from tools.training import dry_races
+    dry, _ = dry_races(laps)
+    races = dry.groupby(["Season", "Race"]).size().index.tolist()
+    old = os.environ.get("F1_MODEL_DIR")
+    rows = []
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            for k, (s, r) in enumerate(races, 1):
+                out = os.path.join(tmp, f"race{k}")
+                profiles = train_without(laps, s, r, out)
+                os.environ["F1_MODEL_DIR"] = out
+                shared.reset_models()
+                with use_profiles(profiles):
+                    res = backtest_race(dry, s, r, frac=frac, n_sims=n_sims, form_std=form_std)
+                if res:
+                    rows.append({**res, "form_std": form_std})
+                if verbose:
+                    print(f"  {k:2d}/{len(races)} {s} {r}: " + (f"rho {res['rho_sim']:.2f} vs {res['rho_now']:.2f}"
+                                                               if res else "skipped"), flush=True)
+    finally:
+        if old is None:
+            os.environ.pop("F1_MODEL_DIR", None)
+        else:
+            os.environ["F1_MODEL_DIR"] = old
+        shared.reset_models()
+    return pd.DataFrame(rows)
+
+
+def summarise(df: pd.DataFrame) -> pd.DataFrame:
+    summary = df.groupby("form_std")[["rho_sim", "rho_now", "mae_sim", "mae_now", "log_score", "cover80"]].mean()
+    summary["races"] = df.groupby("form_std").size()
+    summary["sim_beats_baseline_rho"] = df.assign(w=df.rho_sim > df.rho_now).groupby("form_std")["w"].mean()
+    return summary
+
+
 def run(laps: pd.DataFrame, form_stds=(0.0, 0.12, 0.2, 0.25, 0.3, 0.4), n_sims=300, frac=0.4) -> tuple[pd.DataFrame, pd.DataFrame]:
     from tools.training import dry_races
     dry, _ = dry_races(laps)
@@ -89,10 +165,7 @@ def run(laps: pd.DataFrame, form_stds=(0.0, 0.12, 0.2, 0.25, 0.3, 0.4), n_sims=3
             if res:
                 rows.append({**res, "form_std": fs})
     df = pd.DataFrame(rows)
-    summary = df.groupby("form_std")[["rho_sim", "rho_now", "mae_sim", "mae_now", "log_score", "cover80"]].mean()
-    summary["races"] = df.groupby("form_std").size()
-    summary["sim_beats_baseline_rho"] = df.assign(w=df.rho_sim > df.rho_now).groupby("form_std")["w"].mean()
-    return df, summary
+    return df, summarise(df)
 
 
 def main(argv=None):
@@ -101,7 +174,22 @@ def main(argv=None):
     ap.add_argument("--sims", type=int, default=300)
     ap.add_argument("--frac", type=float, default=0.4, help="fraction of the race already run")
     ap.add_argument("--out", default=os.path.join(REPO_ROOT, "models", "backtest_report.json"))
+    ap.add_argument("--loro", action="store_true",
+                    help="leave one race out: retrain models + profiles without each race (out-of-sample)")
     args = ap.parse_args(argv)
+    if args.loro:
+        print(f"Leave-one-race-out at RACE_FORM_STD = {eng.RACE_FORM_STD}: retraining for every race…")
+        df = run_loro(pd.read_parquet(args.laps), n_sims=args.sims, frac=args.frac)
+        summary = summarise(df)
+        pd.set_option("display.width", 200)
+        print(summary.round(3).to_string())
+        out = args.out.replace(".json", "_loro.json")
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        with open(out, "w") as f:
+            json.dump({"summary": summary.round(4).reset_index().to_dict(orient="records"),
+                       "races": df.round(4).to_dict(orient="records"), "frac": args.frac, "sims": args.sims,
+                       "leave_one_race_out": True}, f, indent=2)
+        return 0
     df, summary = run(pd.read_parquet(args.laps), n_sims=args.sims, frac=args.frac)
     pd.set_option("display.width", 200)
     print(summary.round(3).to_string())
