@@ -135,7 +135,8 @@ def build_lap_dataset(laps: pd.DataFrame, fuel_s_per_lap: float = FUEL_S_PER_LAP
         & d["TyreLife"].notna()
     )
     if "Deleted" in d:
-        keep &= d["Deleted"].fillna(False).astype(bool).eq(False)
+        deleted = d["Deleted"].map(lambda v: str(v).strip().lower() == "true" if pd.notna(v) else False)
+        keep &= ~deleted.astype(bool)
     d = d[keep].copy()
 
     fuel_laps_left = d["TotalLaps"] - d["LapNumber"]
@@ -147,7 +148,8 @@ def build_lap_dataset(laps: pd.DataFrame, fuel_s_per_lap: float = FUEL_S_PER_LAP
     enc = LabelEncoder().fit(d["Team"].astype(str))
     d["CompoundEncoded"] = d["Compound"].map(COMPOUND_MAP)
     d["TeamEncoded"] = enc.transform(d["Team"].astype(str))
-    d["RainfallEncoded"] = d["Rainfall"].fillna(False).astype(bool).astype(int)
+    d["RainfallEncoded"] = d["Rainfall"].map(
+        lambda v: str(v).strip().lower() == "true" if pd.notna(v) else False).astype(int)
     d["TrackTemp"] = d["TrackTemp"].fillna(d["TrackTemp"].median())
     d["AirTemp"] = d["AirTemp"].fillna(d["AirTemp"].median())
     d["Group"] = d["Season"].astype(str) + " " + d["Race"]

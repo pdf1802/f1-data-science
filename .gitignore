@@ -40,3 +40,6 @@ Thumbs.db
 .Rhistory
 **/.Rhistory
 .pytest_cache/
+
+# Exported lap data (regenerate with python -m tools.export_cache)
+data/

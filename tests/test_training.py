@@ -175,3 +175,25 @@ def test_clear_error_when_no_race_loads(monkeypatch):
     monkeypatch.setattr(training, "load_race", lambda *a, **k: (_ for _ in ()).throw(ValueError("401")))
     with pytest.raises(training.NoRacesLoaded, match="401"):
         training.load_races([(2024, "British Grand Prix")], verbose=False)
+
+
+def test_boolean_columns_survive_parquet(tmp_path):
+    """Deleted/Rainfall as text 'False' must not be read as True (a non-empty string is truthy)."""
+    laps = synthetic_race(n_laps=30)
+    laps["Deleted"] = pd.Series([False, None, True] * (len(laps) // 3), dtype=object)
+    expected = len(training.build_lap_dataset(laps)[0])
+    as_text = laps.copy()
+    for col in ("Deleted", "Rainfall"):
+        as_text[col] = as_text[col].astype("string")      # worst case: booleans stored as text
+    assert len(training.build_lap_dataset(as_text)[0]) == expected
+    assert training.build_lap_dataset(as_text)[0]["RainfallEncoded"].eq(0).all()
+
+
+def test_export_finds_only_race_sessions_2022_2025(tmp_path):
+    from tools.export_cache import races_in_cache
+    for p in ["2023/2023-03-05_Bahrain_Grand_Prix/2023-03-05_Race",
+              "2024/2024-07-07_British_Grand_Prix/2024-07-06_Qualifying",
+              "2024/2024-02-21_Pre-Season_Testing/2024-02-21_Practice_1",
+              "2026/2026-03-08_Australian_Grand_Prix/2026-03-08_Race"]:
+        (tmp_path / p).mkdir(parents=True)
+    assert races_in_cache(str(tmp_path)) == [(2023, "Bahrain Grand Prix")]
