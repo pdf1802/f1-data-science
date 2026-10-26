@@ -196,3 +196,11 @@ def test_server_broadcasts_lines_and_queues_client_commands():
         c.close()
     finally:
         server.close()
+
+
+def test_take_control_does_not_send_real_retirements_from_the_future():
+    real = make_race(30, retire={"D05": 15}, placeholder=True)
+    tc = TakeControlFeed(real, 2099, RACE, 10, seed=1)
+    entries = tc.payload(1e5)["lap_times"]["D05"]
+    assert not [e for e in entries if e.get("fastf1_generated")]   # he races on in the simulation
+    assert max(e["lap"] for e in entries) == 30

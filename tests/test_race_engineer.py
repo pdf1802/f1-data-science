@@ -256,3 +256,17 @@ def test_clocks_are_aligned_when_the_replay_could_not():
     b, _ = re_.laps_from_payload(p, RACE, 20)
     far = lambda df: set(map(tuple, df.loc[(df.Time.dt.total_seconds() - t).abs() > 3, ["Driver", "LapNumber"]].values))
     assert far(a) == far(b)
+
+
+def test_a_car_on_its_out_lap_still_owes_most_of_its_stop():
+    """D04's in-lap is 14 (+4 s); its out-lap 15 costs +19 s more — known as soon as lap 14 ended in the pits."""
+    feed = RaceFeed(make_race(30, pit_split=(4.0, 19.0)), 2099, RACE)
+    me = "D00"                                                     # the leader finishes lap 15…
+    assert line(feed, "D04", 14) < line(feed, me, 15) < line(feed, "D04", 15)   # …while D04 is on its out-lap
+    eng = RaceEngineer(me, RACE, n_sims=10)
+    eng.last_lap_done = 14
+    c = eng.update(feed.payload(line(feed, me, 15) + 0.2))
+    st = c["standings"].set_index("Driver")
+    assert "D04" in c["estimated"]
+    real_gap = line(feed, "D04", 15) - min(line(feed, d, 15) for d in feed.tl)
+    assert abs(st.loc["D04", "Gap"] - real_gap) < 4.0

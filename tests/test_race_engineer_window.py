@@ -7,7 +7,10 @@ import time
 
 import pytest
 
-pytest.importorskip("PySide6")
+try:
+    import PySide6.QtWidgets  # noqa: F401
+except ImportError:            # not installed, or a broken install (e.g. a DLL that won't load on Windows)
+    pytest.skip("PySide6 not available", allow_module_level=True)
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication  # noqa: E402

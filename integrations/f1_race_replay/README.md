@@ -54,11 +54,12 @@ Options: `--circuit "Bahrain Grand Prix"`, `--sims 300` (Monte Carlo races per o
 
 1. **Snapshot at the end of lap N** — the lap the followed driver has just completed. Cars ahead on the
    road crossed that line already: their real times are used. Cars behind, and lapped cars, have not —
-   their line time is **estimated** from where they are now (`rel_dist` in the frame) and their recent
-   pace. They are marked `~` in the tower. *(The first version took N from the leader and silently
+   their line time is **estimated** from their recent pace (plus the rest of the stop if they are on
+   their out-lap), or from `rel_dist` in the frame when they are in the last 10 % of the lap — it is
+   distance, not time, so it is only trusted near the line. They are marked `~` in the tower. *(The first version took N from the leader and silently
    dropped every car that had not completed lap N yet — "ALO is not running".)*
    - A car in the pit lane (`in_pit`) that has not crossed the line yet is treated as stopping at the end
-     of lap N, onto the next compound.
+     of lap N, onto HARD (MEDIUM if it was on HARD) — a guess: the new compound isn't known yet.
    - A stop costs ~23 s, but only ~4 s of it falls on the in-lap; ~19 s is the out-lap (measured on 799
      green-flag stops). The engine charges stops on the in-lap, so a car that pitted at the end of lap N
      gets the rest added now — the tower shows where it will rejoin.
@@ -140,10 +141,10 @@ thread, and is skipped if PySide6 is not installed.
   they do".
 - Dry races only: on INTERMEDIATE / WET the window says so and makes no call.
 - Line times of cars behind are estimates (`python -m integrations.f1_race_replay.estimate_accuracy`,
-  2,736 estimates in Bahrain 2023, Monza 2024 and Monaco 2025). From pace alone — nothing the engineer
-  could not know — the median error is **0.48 s** (90 % under 3.0 s) when that car does not stop in the
-  lap, but **16 s** when it does (the stop is still in the future). With the stand-in's `rel_dist` the
-  median drops to 0.17 s, an optimistic bound: that `rel_dist` is elapsed time over the lap's real
-  duration. Real frames give distance along the lap, so expect something in between.
+  2,736 estimates in Bahrain 2023, Monza 2024 and Monaco 2025, through the stand-in stream): median
+  error **0.40 s** (90 % under 2.9 s) when that car does not stop in the lap, 0.02 s within 10 s of the
+  line, 4.7 s when it does stop (an in-lap's stop is still in the future). Using `rel_dist` all round the
+  lap would look better here (0.18 s), but only because the stand-in's `rel_dist` is built from the
+  lap's real duration; accuracy with the real, distance-based `rel_dist` is not measured.
 - Take-control: no DNFs and no new weather.
 - Model era: 2022–2025 cars and rules; 2026 is excluded on purpose.

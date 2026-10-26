@@ -58,6 +58,10 @@ MIN_CALL_LAP = 3           # no calls on the opening laps (pace not known yet)
 # takes less). Counting the field's laps instead of seconds keeps everyone in during a red flag.
 OUT_FIELD_LAPS, OUT_WITNESSES = 3, 3
 STOPPED_S = 20.0           # s of replay time without moving → parked (retired), unless red flag
+# Trust the frame's rel_dist only in the last 10 % of a lap. It is DISTANCE along the lap, and
+# speed is not constant round a lap: mid-lap a few % of distance/time mismatch is seconds of
+# error. Near the line that mismatch vanishes; elsewhere recent pace is the better guess.
+REL_TRUST = 0.9
 STAY = "Stay out (default plan)"
 OPTION_COLUMNS = ["Option", "P(win)", "P(podium)", "P(points)", "Exp. position",
                   "Gain vs first (places)", "Gain 95% CI"]
@@ -260,6 +264,9 @@ def snapshot_at_lap(laps: pd.DataFrame, n: int, t_now: float, frame_drivers: dic
     """
     frame_drivers = frame_drivers or {}
     running = running_drivers(laps, t_now, frame_drivers, stopped)
+    from tools.circuit_profiles import profile_for
+    from tools.shared import PIT_COST_GREEN
+    pit_loss = (profile_for(str(laps["Race"].iloc[0])) or {}).get("pit_loss_s") or PIT_COST_GREEN
     field = _sec(laps.loc[laps["LapNumber"] > 1, "LapTime"]).median()
     field = float(field) if np.isfinite(field) else 95.0
     by_driver = {d: g.sort_values("LapNumber") for d, g in laps.groupby("Driver")}
@@ -282,10 +289,13 @@ def snapshot_at_lap(laps: pd.DataFrame, n: int, t_now: float, frame_drivers: dic
         if not (g["LapNumber"] == n).any():
             if last_lap > n:                                  # gap in the data: back off from a later lap
                 t_n = last_t - (last_lap - n) * pace
-            elif rel is not None and cur_lap == last_lap + 1 and 0.0 <= rel < 1.0:
-                t_n = t_now + ((n - cur_lap) + (1.0 - rel)) * pace
+            elif rel is not None and cur_lap == n == last_lap + 1 and REL_TRUST <= rel < 1.0:
+                t_n = t_now + (1.0 - rel) * pace                # about to cross line n
             else:
-                t_n = max(last_t + (n - last_lap) * pace, t_now + 0.1)
+                # on its out-lap (last completed lap ended in the pit lane): ~82 % of the stop is still to come
+                out_lap = pd.notna(last["PitInTime"]) and cur_lap == last_lap + 1
+                t_n = max(last_t + (n - last_lap) * pace + (eng.OUT_LAP_SHARE * pit_loss if out_lap else 0.0),
+                          t_now + 0.1)
             estimated.append(d)
             extra.append({"Driver": d, "LapNumber": n, "LapTime": pd.NaT, "Time": pd.to_timedelta(t_n, unit="s"),
                           "Compound": last["Compound"], "TyreLife": np.nan,

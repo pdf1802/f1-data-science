@@ -8,12 +8,13 @@ lapped cars) have not crossed it yet: their lap-N line time is estimated. This s
 replays real races through the stand-in stream, makes that estimate at every lap, and
 compares it with the time the car really crossed.
 
-Two numbers, on purpose:
-  with rel_dist   the stand-in stream's rel_dist = elapsed time / the lap's REAL duration,
-                  so part of the answer is baked in: an optimistic lower bound. Real frames
-                  give distance along the lap, and speed is not constant round a lap.
-  pace only       no frame information: last crossing + recent pace. Uses nothing the
-                  engineer could not know — an honest upper bound for the real stream.
+Three numbers, on purpose:
+  engineer        what the Race Engineer does: recent pace, and the frame's rel_dist only in
+                  the last 10 % of the lap (REL_TRUST) where distance ≈ time
+  pace only       no frame information at all: last crossing + recent pace
+  rel_dist        rel_dist everywhere. Optimistic here: the stand-in's rel_dist is elapsed time
+                  / the lap's REAL duration, so part of the answer is baked in. Real frames give
+                  distance along the lap — accuracy on real frames is not measured.
 """
 
 from __future__ import annotations
@@ -40,8 +41,14 @@ def measure(laps: pd.DataFrame, season: int, race: str, driver: str) -> pd.DataF
         t = tl["line"][tl["lap"].index(n)] + 0.2
         p = feed.payload(t)
         done, _ = re_.laps_from_payload(p, race, feed.total_laps)
-        for mode, frame in (("with rel_dist", p["frame"]["drivers"]), ("pace only", {})):
-            snap, _, _, est = re_.snapshot_at_lap(done, n, t, frame)
+        trust = re_.REL_TRUST
+        for mode, frame, rel_trust in (("engineer", p["frame"]["drivers"], trust), ("pace only", {}, trust),
+                                       ("rel_dist", p["frame"]["drivers"], 0.0)):
+            re_.REL_TRUST = rel_trust
+            try:
+                snap, _, _, est = re_.snapshot_at_lap(done, n, t, frame)
+            finally:
+                re_.REL_TRUST = trust
             at_n = snap[snap["LapNumber"] == n].set_index("Driver")["Time"].dt.total_seconds()
             for d in est:
                 other = feed.tl[d]
@@ -72,7 +79,7 @@ def main(argv=None):
     for text, driver in DEFAULT:
         year, _, race = text.partition(" ")
         parts.append(measure(laps, int(year), race, driver))
-        print(f"{text} ({driver}): {len(parts[-1]) // 2} estimates", flush=True)
+        print(f"{text} ({driver}): {len(parts[-1]) // 3} estimates", flush=True)
     table, near = summary(pd.concat(parts, ignore_index=True))
     print("\n|error| of the estimated line time (s)")
     print(table.to_string())

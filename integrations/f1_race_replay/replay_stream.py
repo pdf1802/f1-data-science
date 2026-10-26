@@ -277,6 +277,8 @@ class TakeControlFeed(RaceFeed):
                 if isinstance(tl[k], list):
                     del tl[k][keep:]
         self.status = {k: v for k, v in self.status.items() if k <= N}
+        for d in drv:                                             # their real retirements are not this race's
+            self.generated[d] = [e for e in self.generated.get(d, []) if e["lap"] <= N]
         self.commanded: set[str] = set()
         self.log: list[str] = [f"Engine in control after lap {N}: rivals on default plans, no DNFs"]
         self._before: dict[int, tuple] = {}                       # lap → (state, draw index) before running it

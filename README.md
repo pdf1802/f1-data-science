@@ -102,7 +102,7 @@ Add `--take-control 20` to the stream: the real race runs to lap 20, then the en
 ### Run the tests
 
 ```bash
-python -m pytest -q        # 76 tests, ~35 s
+python -m pytest -q        # 78 tests, ~35 s
 ```
 
 The tests run on small **stand-in models** with the same feature contracts as the real ones (built in `tests/conftest.py`), so they check logic and contracts — not prediction quality. `F1_USE_REAL_MODELS=1` runs them against your trained models. The window test runs offscreen and is skipped without PySide6.
@@ -138,7 +138,7 @@ It beats the baseline on races it has never seen, but only just: compound, tyre 
 
 Out of sample the engine loses a little, as it should, and still beats the baseline clearly. `RACE_FORM_STD = 0.25 s/lap` is the value whose 80 % intervals contain the real position ~80 % of the time (in-sample: 0.12 → 68 %, overconfident; 0.40 → 88 %, too cautious; the log score prefers 0.30 by a hair). Out of sample the baseline wins 9 races: clearly in Melbourne 2023 (ρ 0.61 vs 0.78, three red flags), Singapore 2023 (0.61 vs 0.76) and Monaco 2024 (0.79 vs 0.97, where the order barely changes), narrowly in the other six.
 
-**Race Engineer — live state accuracy.** Cars behind the followed driver have not crossed the line yet when the call is made, so their line time is estimated (`python -m integrations.f1_race_replay.estimate_accuracy`, 2,736 estimates in Bahrain 2023, Monza 2024, Monaco 2025). From recent pace alone — nothing the engineer could not know — the median error is **0.48 s** (90 % under 3.0 s) when that car does not stop in the lap, and **16 s** when it does (its stop is still in the future; a car already in the pit lane is detected through `in_pit`). Using the stand-in stream's `rel_dist` the median falls to 0.17 s, but that is an optimistic bound: the stand-in's `rel_dist` is built from the lap's real duration.
+**Race Engineer — live state accuracy.** Cars behind the followed driver have not crossed the line yet when the call is made, so their line time is estimated: from recent pace, plus the rest of the stop for a car on its out-lap, and from the frame's `rel_dist` only in the last 10 % of the lap, where distance along the lap ≈ time (`python -m integrations.f1_race_replay.estimate_accuracy`, 2,736 estimates in Bahrain 2023, Monza 2024, Monaco 2025, through the stand-in stream). Median error **0.40 s** (90 % under 2.9 s) when that car does not stop in the lap, 0.02 s within 10 s of the line, and 4.7 s when it does stop (an in-lap's stop is still in the future). Accuracy on the real stream's distance-based `rel_dist` is not measured — the reason it is only trusted near the line.
 
 **Module 3** clusters HAM + LEC together (smooth, late braking) and isolates the McLaren pair; the V1 → V2 iteration removed a corrupted DRS channel that created a one-driver cluster.
 
@@ -170,7 +170,7 @@ Acknowledging limitations is a feature of the project, not a bug.
 - **Module 2 train/serve skew.** `GapAhead` was a lap-time difference in training and a real gap at inference; overtakes included pit stops; `scale_pos_weight` inflated probabilities the simulator consumes.
 - **Race Engineer dropped cars.** The live state was built at the leader's lap, so every car that had not crossed that line yet disappeared ("ALO is not running"). Now it is built at the followed driver's lap, with estimated line times for cars behind and lapped cars, and tested for future leakage.
 - **Two clocks.** f1-race-replay sends lap end times on the FastF1 session clock and the same moments on the replay clock; comparing the wrong pair would make every lap look either completed or not started.
-- **Found by an independent review** (a fresh reviewer who had not written the code, run before release): after a red flag the "out of the race" rule dropped every car behind (it counted seconds; it now counts the field's laps); a car that pitted at the end of lap N rejoined ~20 s too far ahead (a stop's loss is ~4 s on the in-lap and ~19 s on the out-lap — the engine now charges the out-lap part); FastF1's generated placeholder rows after a retirement looked like completed laps; the stand-in stream reported a Safety Car from the start of its lap (now a lap late, never early); and the backtest was in-sample — now also run leave-one-race-out.
+- **Found by an independent review** (a separate AI code-review agent, with no access to how the code was written, run before release): after a red flag the "out of the race" rule dropped every car behind (it counted seconds; it now counts the field's laps); a car that pitted at the end of lap N rejoined ~20 s too far ahead (a stop's loss is ~4 s on the in-lap and ~19 s on the out-lap — the engine now charges the out-lap part); FastF1's generated placeholder rows after a retirement looked like completed laps; the stand-in stream reported a Safety Car from the start of its lap (now a lap late, never early); and the backtest was in-sample — now also run leave-one-race-out.
 
 ---
 
