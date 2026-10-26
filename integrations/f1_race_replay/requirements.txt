@@ -1,0 +1,2 @@
+# Extra dependency for the Race Engineer window (the stream and the engine need only ../../requirements.txt)
+PySide6>=6.6
