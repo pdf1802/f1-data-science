@@ -83,8 +83,25 @@ def model_info() -> dict:
     from tools.training import lap_model_sanity
     lap_model, _, enc = get_models()
     feats = shared.model_features(lap_model, shared.LAP_FEATURES)
-    sanity = lap_model_sanity(lap_model, range(len(enc.classes_)))
-    return {"version": "V2" if "LapNumber" in feats else "V3", "sanity": sanity}
+    teams = range(len(enc.classes_)) if "TeamEncoded" in feats else (0,)
+    sanity = lap_model_sanity(lap_model, teams, n_circuits=len(shared.get_known_circuits()))
+    version = "V2" if "LapNumber" in feats else "V3.1" if "CircuitEncoded" in feats else "V3"
+    return {"version": version, "sanity": sanity}
+
+
+AVERAGE_CIRCUIT = "Average of all circuits"
+
+
+def circuit_picker(col, key: str, default: str = "Bahrain"):
+    """Circuit selector for the model-based tabs → event name, or None (= averaged)."""
+    known = shared.get_known_circuits()
+    if not known:                                     # V2 models: no circuit feature
+        return None
+    options = known + [AVERAGE_CIRCUIT]
+    choice = col.selectbox("Circuit", options, options.index(default) if default in known else len(known),
+                           key=key, help="The V3.1 models know the circuit: degradation and overtaking "
+                                         "difficulty differ a lot (Monaco vs Spa).")
+    return None if choice == AVERAGE_CIRCUIT else choice
 
 
 def models_ready() -> bool:
@@ -190,6 +207,7 @@ with tabs[0]:
                 q = cached_quali(year, gp)
                 st.session_state["grid"] = grid_from_qualifying(q, total_laps, start_c, next_c, pit_lap)
                 st.session_state["grid_event"] = q.attrs.get("event", f"{gp} {year}")
+                st.session_state["grid_circuit"] = q.attrs.get("event_name", gp)
             except Exception as e:
                 st.error(f"Couldn't load qualifying for {gp} {year}: {e}")
 
@@ -228,7 +246,8 @@ with tabs[0]:
             st.caption(f"→ P(at least one Safety Car) ≈ {p_any_sc:.0%}")
 
             config = {"total_laps": int(total_laps), "track_temp": track_temp, "air_temp": air_temp,
-                      "sc_prob_per_lap": sc_prob, "sc_pit_window": sc_window, "dnf_prob_per_lap": dnf}
+                      "sc_prob_per_lap": sc_prob, "sc_pit_window": sc_window, "dnf_prob_per_lap": dnf,
+                      "circuit": st.session_state.get("grid_circuit")}
             errs = validate_grid(grid, total_laps)
             for e in errs:
                 st.error(e)
@@ -384,6 +403,7 @@ with tabs[2]:
         lc, rc = st.columns(2)
         chaser = driver_inputs(lc, "Chaser (considering the stop)", "VER", "Red Bull Racing", 3, "HARD", 14, "uc_a")
         leader = driver_inputs(rc, "Car ahead", "NOR", "McLaren", 2, "MEDIUM", 14, "uc_b")
+        uc_circuit = circuit_picker(st, "uc_circuit")
         c = st.columns(6)
         gap = c[0].number_input("Gap (s)", 0.1, 30.0, 2.0, 0.1)
         lap = c[1].number_input("Current lap", 1, 70, 14)
@@ -391,7 +411,7 @@ with tabs[2]:
         lead_c = c[3].selectbox("Leader responds with", COMPOUNDS, 2)
         tt = c[4].number_input("Track °C", 10, 60, 40)
         sc_on = c[5].toggle("Safety Car", False)
-        cfg = {"track_temp": tt, "air_temp": tt - 12, "rainfall": 0}
+        cfg = {"track_temp": tt, "air_temp": tt - 12, "rainfall": 0, "circuit": uc_circuit}
 
         r = undercut_analysis(chaser, leader, gap, lap, cfg, new_c, lead_c, sc_on)
         if r["verdict"] == "BOX BOX":
@@ -458,6 +478,7 @@ with tabs[3]:
     else:
         from tools.stint_optimizer import compare_strategies
         teams = shared.get_known_teams()
+        so_circuit = circuit_picker(st, "so_circuit")
         c = st.columns(5)
         laps_ = c[0].number_input("Race laps", 20, 80, 57, key="so_l")
         team = c[1].selectbox("Team", teams, teams.index("Red Bull Racing") if "Red Bull Racing" in teams else 0,
@@ -465,7 +486,8 @@ with tabs[3]:
         tt = c[2].slider("Track °C", 15, 55, 35, key="so_tt")
         at = c[3].slider("Air °C", 10, 40, 25, key="so_at")
         pc = c[4].number_input("Pit loss (s)", 15.0, 35.0, shared.PIT_COST_GREEN, 0.5, key="so_pc")
-        df = compare_strategies(int(laps_), team, {"track_temp": tt, "air_temp": at}, pit_cost=pc)
+        df = compare_strategies(int(laps_), team, {"track_temp": tt, "air_temp": at, "circuit": so_circuit},
+                                pit_cost=pc)
 
         best = df.iloc[0]
         st.markdown(f"#### Best 1-stop: {best['Strategy']}")
@@ -500,7 +522,7 @@ with tabs[3]:
             fig.add_vline(best["Optimal pit lap"] + 0.5, line=dict(dash="dot", color=NEUTRAL))
             show(base_layout(fig, "Predicted LapDelta (s above the driver's best)", 320,
                              hovermode="closest", xaxis_title="Lap", yaxis_title="LapDelta (s)"))
-            if model_info()["version"] == "V3":
+            if model_info()["version"] != "V2":
                 st.caption("V3 model: deltas are fuel-corrected, so this is tyre performance only — each "
                            "stint should start low and rise. The optimiser trades that rise against the pit loss.")
             else:

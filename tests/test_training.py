@@ -26,7 +26,7 @@ def synthetic_race(season=2024, race="Test Grand Prix", n_laps=50, seed=0):
         first = ["SOFT", "MEDIUM"][i % 2] if i < 16 else "HARD"
         second = "HARD" if first != "HARD" else "MEDIUM"
         pit = int(rng.integers(14, 30)) if first == "SOFT" else int(rng.integers(20, 34))
-        t, age, comp, stint = 0.0, 1, first, 1
+        t, age, comp, stint = 2.5 * i, 1, first, 1     # spaced out, so clean-air laps exist
         pace = 90 + 0.08 * (i // 2)
         for lap in range(1, n_laps + 1):
             lt = (pace + OFFSET[comp] + DEG[comp] * age + FUEL * (n_laps - lap)
@@ -143,12 +143,12 @@ def test_train_models_cli_end_to_end(laps, tmp_path, monkeypatch):
     from tools.stint_optimizer import optimize_pit_lap
     from tools.undercut import DriverState, undercut_analysis
 
-    monkeypatch.setattr(training, "load_races", lambda sessions, verbose=True: (laps, []))
-    monkeypatch.setattr(shared, "enable_fastf1_cache", lambda *a, **k: None)
+    src = tmp_path / "laps.parquet"
+    laps.to_parquet(src, index=False)                   # same path Paco uses: export → train
     out = tmp_path / "models"
-    assert train_models.main(["--out", str(out), "--folds", "3"]) == 0
+    assert train_models.main(["--laps", str(src), "--out", str(out), "--folds", "3"]) == 0
     report = json.loads((out / "training_report.json").read_text())
-    assert report["version"] == "V3" and report["module1"]["sanity"]
+    assert report["version"] == "V3.1" and all(report["module1"]["sanity"].values())
 
     monkeypatch.setenv("F1_MODEL_DIR", str(out))
     shared.reset_models()
@@ -165,8 +165,9 @@ def test_train_models_cli_end_to_end(laps, tmp_path, monkeypatch):
                              "Stop1Lap": 20, "Stop1Compound": "HARD", "Stop2Lap": 0, "Stop2Compound": "HARD"})
         assert simulate(grid, {"total_laps": 40}, n_sims=50)["summary"]["Win %"].sum() == pytest.approx(100)
         # second run → old models are backed up, not lost
-        assert train_models.main(["--out", str(out), "--folds", "3"]) == 0
+        assert train_models.main(["--laps", str(src), "--out", str(out), "--folds", "3"]) == 0
         assert any(p.name.startswith("backup_") for p in out.iterdir())
+        assert json.loads((out / "circuits.json").read_text()) == report["circuits"]
     finally:
         shared.reset_models()
 

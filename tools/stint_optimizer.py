@@ -18,7 +18,7 @@ from itertools import permutations
 import numpy as np
 import pandas as pd
 
-from tools.shared import (COMPOUND_MAP, PIT_COST_GREEN, encode_compound,
+from tools.shared import (COMPOUND_MAP, PIT_COST_GREEN, encode_circuit, encode_compound,
                           encode_team, predict_lap_deltas)
 
 
@@ -29,10 +29,11 @@ def _stint_rows(compound: int, start_lap: int, n_laps: int, team_encoded: int,
         "CompoundEncoded": compound,
         "TyreLife": np.arange(starting_tyre_age, starting_tyre_age + n_laps),
         "TeamEncoded": team_encoded,
-        "LapNumber": laps,          # real race lap → model sees the fuel load
+        "LapNumber": laps,          # used by V2 models; V3 deltas are fuel-corrected (same for every plan)
         "TrackTemp": config["track_temp"],
         "AirTemp": config["air_temp"],
         "RainfallEncoded": config.get("rainfall", 0),
+        "CircuitEncoded": encode_circuit(config.get("circuit")),   # unknown → average of circuits
     })
 
 

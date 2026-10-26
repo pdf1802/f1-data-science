@@ -22,28 +22,30 @@ TEAMS = ["Alfa Romeo", "AlphaTauri", "Alpine", "Aston Martin", "Ferrari",
          "Racing Bulls", "Red Bull Racing", "Williams"]
 
 
+CIRCUITS = ["Bahrain", "British", "Italian", "Monaco"]
+
+
 def _build_standin_models(out_dir, seed=0):
+    """V3.1-shaped stand-ins: lap model on (compound, tyre age, circuit), overtake model + circuit."""
     rng = np.random.default_rng(seed)
     n = 6000
     comp = rng.integers(0, 3, n)
     tyre = rng.integers(1, 40, n)
-    lap = np.clip(tyre + rng.integers(0, 30, n), 1, 70)
-    team = rng.integers(0, len(TEAMS), n)
+    circ = rng.integers(0, len(CIRCUITS), n)
     offset = np.array([0.0, 0.35, 0.7])[comp]            # fresh-tyre pace offset
     deg = np.array([0.075, 0.045, 0.025])[comp] * tyre   # degradation per lap
-    fuel = 0.035 * (70 - lap)                            # heavier early = slower
-    y = offset + deg + fuel * 0.5 + 0.05 * (team % 4) + rng.normal(0, 0.1, n)
-    X = pd.DataFrame({"CompoundEncoded": comp, "TyreLife": tyre, "TeamEncoded": team,
-                      "LapNumber": lap, "TrackTemp": rng.uniform(20, 50, n),
-                      "AirTemp": rng.uniform(15, 35, n), "RainfallEncoded": 0})[shared.LAP_FEATURES]
-    lap_model = XGBRegressor(n_estimators=60, max_depth=4).fit(X, y)
+    y = offset + deg + 0.1 * circ + rng.normal(0, 0.1, n)
+    X = pd.DataFrame({"CompoundEncoded": comp, "TyreLife": tyre, "CircuitEncoded": circ}).astype(float)
+    lap_model = XGBRegressor(n_estimators=60, max_depth=4, monotone_constraints=(0, 1, 0)).fit(X, y)
 
     gap = rng.uniform(0, 3, n)
     tl_b, tl_a = rng.integers(1, 40, n), rng.integers(1, 40, n)
-    logit = 1.0 - 2.0 * gap - 0.08 * (tl_b - tl_a)
+    oc = rng.integers(0, len(CIRCUITS), n)
+    logit = 1.0 - 2.0 * gap - 0.08 * (tl_b - tl_a) - 2.0 * (oc == CIRCUITS.index("Monaco"))
     lbl = (rng.random(n) < 1 / (1 + np.exp(-logit))).astype(int)
     Xo = shared.build_overtake_features(gap, rng.integers(0, 3, n), rng.integers(0, 3, n),
                                         tl_b, tl_a, rng.integers(1, 60, n), rng.integers(2, 20, n))
+    Xo["CircuitEncoded"] = oc.astype(float)
     ovt_model = XGBClassifier(n_estimators=60, max_depth=3).fit(Xo, lbl)
 
     enc = LabelEncoder().fit(TEAMS)
@@ -52,6 +54,8 @@ def _build_standin_models(out_dir, seed=0):
     joblib.dump(enc, os.path.join(out_dir, "team_encoder.pkl"))
     with open(os.path.join(out_dir, "compound_map.json"), "w") as f:
         json.dump(shared.COMPOUND_MAP, f)
+    with open(os.path.join(out_dir, "circuits.json"), "w") as f:
+        json.dump(CIRCUITS, f)
 
 
 @pytest.fixture(scope="session", autouse=True)

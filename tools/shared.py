@@ -92,10 +92,11 @@ COMPOUND_MAP = {"SOFT": 0, "MEDIUM": 1, "HARD": 2}
 COMPOUND_NAMES = {v: k for k, v in COMPOUND_MAP.items()}
 COMPOUND_COLOURS = {"SOFT": "#DA291C", "MEDIUM": "#FFD12E", "HARD": "#F0F0EC"}
 
-# Module 1 feature contract — order AND names must match training exactly
+# Module 1 inputs the TOOLS provide. A fitted model uses a subset of them —
+# see model_features(): V2 used the first 7, V3 uses Compound, TyreLife, Circuit.
 LAP_FEATURES = [
     "CompoundEncoded", "TyreLife", "TeamEncoded",
-    "LapNumber", "TrackTemp", "AirTemp", "RainfallEncoded",
+    "LapNumber", "TrackTemp", "AirTemp", "RainfallEncoded", "CircuitEncoded",
 ]
 
 # Module 2 (V2) feature contract
@@ -146,6 +147,7 @@ CLUSTER_NAMES = {
 _LAP_MODEL = None
 _OVT_MODEL = None
 _TEAM_ENCODER = None
+_CIRCUITS: list[str] = []      # V3: circuits the models were trained on (circuits.json)
 
 
 def load_models():
@@ -154,7 +156,7 @@ def load_models():
 
     Returns (lap_model, ovt_model, team_encoder).
     """
-    global _LAP_MODEL, _OVT_MODEL, _TEAM_ENCODER
+    global _LAP_MODEL, _OVT_MODEL, _TEAM_ENCODER, _CIRCUITS
     if _LAP_MODEL is None:
         model_dir = resolve_model_dir()
         _LAP_MODEL = joblib.load(os.path.join(model_dir, "lap_time_model.pkl"))
@@ -166,13 +168,71 @@ def load_models():
                 saved = json.load(f)
             if saved != COMPOUND_MAP:
                 raise ValueError(f"compound_map.json {saved} != shared.COMPOUND_MAP {COMPOUND_MAP}")
+        circ_path = os.path.join(model_dir, "circuits.json")
+        if os.path.isfile(circ_path):
+            with open(circ_path) as f:
+                _CIRCUITS = list(json.load(f))
     return _LAP_MODEL, _OVT_MODEL, _TEAM_ENCODER
 
 
 def reset_models() -> None:
     """Forget cached models (used by tests to swap in stand-in models)."""
-    global _LAP_MODEL, _OVT_MODEL, _TEAM_ENCODER
+    global _LAP_MODEL, _OVT_MODEL, _TEAM_ENCODER, _CIRCUITS
     _LAP_MODEL = _OVT_MODEL = _TEAM_ENCODER = None
+    _CIRCUITS = []
+
+
+# ── Circuits ─────────────────────────────────────────────────────────────────
+def circuit_name(event: str | None) -> str | None:
+    """'Bahrain Grand Prix' / 'bahrain' → 'Bahrain' (the key used in circuits.json)."""
+    if event is None or (isinstance(event, float) and np.isnan(event)):
+        return None
+    name = str(event).replace("Grand Prix", "").strip()
+    return name[:1].upper() + name[1:] if name else None
+
+
+def get_known_circuits() -> list[str]:
+    load_models()
+    return list(_CIRCUITS)
+
+
+def encode_circuit(event: str | None) -> float:
+    """
+    Circuit → integer the V3 models were trained on, or NaN if unknown.
+    NaN is not an error: predictions then AVERAGE over every known circuit
+    ("a typical track"), which is the honest answer for a track we have no data on.
+    """
+    load_models()
+    name = circuit_name(event)
+    if name is None:
+        return np.nan
+    for i, c in enumerate(_CIRCUITS):
+        if c.lower() == name.lower():
+            return float(i)
+    return np.nan
+
+
+def _predict_marginal(feats: list[str], df: pd.DataFrame, predict) -> np.ndarray:
+    """
+    predict(df[feats]) — but rows with an unknown circuit are predicted once per
+    known circuit and averaged (marginalised). Models without CircuitEncoded are
+    called directly.
+    """
+    if "CircuitEncoded" not in feats:
+        return predict(df[feats].astype(float))
+    df = df.copy()
+    if "CircuitEncoded" not in df:
+        df["CircuitEncoded"] = np.nan
+    known = df["CircuitEncoded"].notna().to_numpy()
+    out = np.empty(len(df))
+    if known.any():
+        out[known] = predict(df.loc[known, feats].astype(float))
+    if (~known).any():
+        n_c = max(len(_CIRCUITS), 1)
+        sub = df.loc[~known]
+        rep = pd.concat([sub.assign(CircuitEncoded=float(i)) for i in range(n_c)], ignore_index=True)
+        out[~known] = np.asarray(predict(rep[feats].astype(float))).reshape(n_c, len(sub)).mean(0)
+    return out
 
 
 # ── Encoding helpers ─────────────────────────────────────────────────────────
@@ -223,8 +283,8 @@ def predict_lap_deltas(features: pd.DataFrame | Iterable[dict]) -> np.ndarray:
     is per call, not per row.
     """
     lap_model, _, _ = load_models()
-    df = pd.DataFrame(features)[model_features(lap_model, LAP_FEATURES)].astype(float)
-    return lap_model.predict(df)
+    df = pd.DataFrame(features)
+    return _predict_marginal(model_features(lap_model, LAP_FEATURES), df, lap_model.predict)
 
 
 def model_features(model, default: list[str]) -> list[str]:
@@ -301,19 +361,22 @@ def build_overtake_features(gap, compound_behind, compound_ahead,
 
 def predict_overtake_probability(gap, compound_behind, compound_ahead,
                                  tyre_life_behind, tyre_life_ahead,
-                                 lap_number, position):
+                                 lap_number, position, circuit=None):
     """
     P(car behind passes car ahead this lap). Scalars → float, arrays → array.
 
-    Known limitation (documented in README): the model was trained with
-    GapAhead = |lap-time difference|, not the true time gap between cars.
-    At inference we pass the true gap. Fixing that needs a Module 2 retrain.
+    circuit: event/circuit name ('Monaco Grand Prix', 'Monaco') or an already
+    encoded value. V3 models know the circuit (Monaco ~0.6 % vs Spa ~6 % per
+    situation); unknown → averaged over known circuits. V2 models ignore it.
     """
     _, ovt_model, _ = load_models()
     feats = build_overtake_features(gap, compound_behind, compound_ahead,
                                     tyre_life_behind, tyre_life_ahead,
                                     lap_number, position)
-    probs = ovt_model.predict_proba(feats)[:, 1]
+    enc = circuit if isinstance(circuit, (int, float, np.integer, np.floating)) else encode_circuit(circuit)
+    feats["CircuitEncoded"] = enc
+    probs = _predict_marginal(model_features(ovt_model, OVT_FEATURES), feats,
+                              lambda X: ovt_model.predict_proba(X)[:, 1])
     return float(probs[0]) if np.ndim(gap) == 0 and len(probs) == 1 else probs
 
 

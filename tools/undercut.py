@@ -27,7 +27,7 @@ import numpy as np
 import pandas as pd
 
 from tools.shared import (BASE_LAPTIME, DRS_WINDOW, PIT_COST_GREEN, PIT_COST_SC,
-                          encode_compound, encode_team, lap_time_from_delta,
+                          encode_circuit, encode_compound, encode_team, lap_time_from_delta,
                           predict_lap_deltas, predict_overtake_probability)
 
 VERDICT_GAP = 1.5            # worst-case gap must close below this…
@@ -101,6 +101,7 @@ def undercut_analysis(chaser: DriverState, leader: DriverState, current_gap: flo
     rows["TrackTemp"] = config["track_temp"]
     rows["AirTemp"] = config["air_temp"]
     rows["RainfallEncoded"] = config.get("rainfall", 0)
+    rows["CircuitEncoded"] = encode_circuit(config.get("circuit"))
     factor = np.where(rows["Car"] == "A", pf.get(chaser.team_name, DEFAULT_PACE_FACTOR),
                       pf.get(leader.team_name, DEFAULT_PACE_FACTOR))
     rows["LapTime"] = lap_time_from_delta(predict_lap_deltas(rows), factor, BASE_LAPTIME)
@@ -137,7 +138,8 @@ def undercut_analysis(chaser: DriverState, leader: DriverState, current_gap: flo
         elif g < DRS_WINDOW:
             probs[lap] = round(predict_overtake_probability(
                 g, a.CompoundEncoded[k - 1], b.CompoundEncoded[k - 1],
-                a.TyreLife[k - 1], b.TyreLife[k - 1], lap, chaser.position), 4)
+                a.TyreLife[k - 1], b.TyreLife[k - 1], lap, chaser.position,
+                circuit=config.get("circuit")), 4)
         else:
             probs[lap] = None                      # out of range: model not asked
 

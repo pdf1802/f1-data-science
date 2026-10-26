@@ -25,7 +25,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from tools.shared import (FUEL_CORRECTION, encode_compound, encode_team,
+from tools.shared import (FUEL_CORRECTION, encode_circuit, encode_compound, encode_team,
                           enable_fastf1_cache, predict_lap_deltas)
 
 STINT_LAPS = 20
@@ -56,21 +56,27 @@ def load_qualifying_results(year: int, gp: str, session=None) -> pd.DataFrame:
     best["QualyRank"] = best.index + 1
     best["GapToPole"] = best["QualyTime"] - best["QualyTime"].iloc[0]
     best.attrs["event"] = f"{session.event['EventName']} {year}"
+    best.attrs["event_name"] = session.event["EventName"]
     return best
 
 
 def predict_race_pace(quali: pd.DataFrame, start_compound: str = "MEDIUM",
                       track_temp: float = DEFAULT_TRACK_TEMP,
                       air_temp: float = DEFAULT_AIR_TEMP,
-                      stint_laps: int = STINT_LAPS) -> pd.DataFrame:
-    """Apply the three corrections to a qualifying table (from load_qualifying_results)."""
+                      stint_laps: int = STINT_LAPS, circuit: str | None = None) -> pd.DataFrame:
+    """
+    Apply the three corrections to a qualifying table (from load_qualifying_results).
+    circuit: event name; defaults to the event stored on the table by load_qualifying_results.
+    """
     df = quali.copy()
     df["TeamEncoded"] = df["Team"].map(encode_team)
     teams = df["TeamEncoded"].unique()
     race_c, soft_c = encode_compound(start_compound), encode_compound("SOFT")
 
     # One frame with every row we need, for every team → one predict() call
-    common = {"TrackTemp": track_temp, "AirTemp": air_temp, "RainfallEncoded": 0}
+    circuit = circuit or quali.attrs.get("event_name")
+    common = {"TrackTemp": track_temp, "AirTemp": air_temp, "RainfallEncoded": 0,
+              "CircuitEncoded": encode_circuit(circuit)}
     comp_rows = pd.DataFrame([
         {"TeamEncoded": t, "CompoundEncoded": c, "TyreLife": 1, "LapNumber": CORRECTION_LAP,
          "Kind": kind, **common}

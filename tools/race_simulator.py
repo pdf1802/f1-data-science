@@ -45,7 +45,7 @@ import numpy as np
 import pandas as pd
 
 from tools.shared import (BASE_LAPTIME, DRS_WINDOW, NOISE_STD, PIT_COST_GREEN,
-                          PIT_COST_SC, encode_compound, encode_team,
+                          PIT_COST_SC, encode_circuit, encode_compound, encode_team,
                           lap_time_from_delta, predict_lap_deltas,
                           predict_overtake_probability)
 
@@ -155,6 +155,7 @@ def _delta_table(teams_enc: np.ndarray, n_laps: int, max_age: int, cfg: dict) ->
         "CompoundEncoded": c.ravel(), "TyreLife": a.ravel(), "TeamEncoded": teams_enc[t.ravel()],
         "LapNumber": l.ravel(), "TrackTemp": cfg["track_temp"], "AirTemp": cfg["air_temp"],
         "RainfallEncoded": cfg.get("rainfall", 0),
+        "CircuitEncoded": encode_circuit(cfg.get("circuit")),
     })
     table = np.zeros((T, 3, max_age + 1, n_laps + 1))
     table[t.ravel(), c.ravel(), a.ravel(), l.ravel()] = predict_lap_deltas(rows)
@@ -190,6 +191,7 @@ def _prepare(grid: pd.DataFrame, cfg: dict) -> dict:
 def _run(p: dict, cfg: dict, dr: _Draws, record_trace: bool = True) -> dict:
     S, D, L = dr.sc_u.shape[0], p["D"], p["L"]
     base = cfg.get("base_laptime", BASE_LAPTIME)
+    circuit_enc = encode_circuit(cfg.get("circuit"))       # NaN → averaged over known circuits
     sims = np.arange(S)[:, None]
     drv = np.arange(D)[None, :]
 
@@ -248,7 +250,7 @@ def _run(p: dict, cfg: dict, dr: _Draws, record_trace: bool = True) -> dict:
             si, pi = np.nonzero(ask)
             prob[si, pi] = predict_overtake_probability(
                 gap_prev[si, pi], comp_o[si, pi], comp_o[si, pi - 1], age_o[si, pi],
-                age_o[si, pi - 1], np.full(len(si), lap), pi + 1)
+                age_o[si, pi - 1], np.full(len(si), lap), pi + 1, circuit=circuit_enc)
 
         # sequential pass down the order: held up unless the pass succeeds
         cand = cum_o + lt_o
