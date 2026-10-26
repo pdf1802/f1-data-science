@@ -43,3 +43,6 @@ Thumbs.db
 
 # Exported lap data (regenerate with python -m tools.export_cache)
 data/
+
+# Training outputs (regenerate with python -m tools.train_models)
+models/*.json

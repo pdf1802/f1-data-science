@@ -420,11 +420,17 @@ class LiveRace:
         remaining = self.setup["L"] - self.lap
         dr = draw(n_sims, remaining, self.setup["D"], self.cfg, self.seed + 1000 + self.lap
                   if seed is None else seed)
+        # Every option runs in ONE batch: block k of the simulations follows option k, and every
+        # block uses the same draws (tiled) — identical to looping over the options, but the
+        # models are called once per lap instead of once per lap per option.
+        names = list(options)
+        K = len(names)
+        st = broadcast_state(self.state, n_sims * K)
+        for k, name in enumerate(names):
+            _set_plan(st, i, options[name], rows=slice(k * n_sims, (k + 1) * n_sims))
+        pos_all = run_to_flag(st, self.setup, self.cfg, tile_draws(dr, K))["positions"][:, i].reshape(K, n_sims)
         rows, ref = [], None
-        for name, plan in options.items():
-            st = broadcast_state(self.state, n_sims)
-            _set_plan(st, i, plan)
-            pos = run_to_flag(st, self.setup, self.cfg, dr)["positions"][:, i]
+        for name, pos in zip(names, pos_all):
             if ref is None:
                 ref = pos
             diff = ref - pos                                          # >0: this option finishes higher
@@ -435,13 +441,22 @@ class LiveRace:
         return pd.DataFrame(rows)
 
 
-def _set_plan(state: dict, i: int, plan: list[tuple[int, str]]) -> None:
-    """Replace the remaining stops of driver i (all simulations) with `plan`."""
-    nxt = state["nxt"][:, i]
-    for s in range(state["cum"].shape[0]):
-        k0 = int(nxt[s])
+def tile_draws(dr: Draws, k: int) -> Draws:
+    """The same draws repeated k times along the simulation axis (one block per option)."""
+    if k == 1:
+        return dr
+    return Draws(**{f: np.concatenate([getattr(dr, f)] * k, axis=0) for f in dr.__dataclass_fields__})
+
+
+def _set_plan(state: dict, i: int, plan: list[tuple[int, str]], rows=slice(None)) -> None:
+    """Replace the remaining stops of driver i (in simulations `rows`, default all) with `plan`."""
+    idx = np.arange(state["cum"].shape[0])[rows]
+    nxt = state["nxt"][idx, i]
+    plan = sorted(plan)
+    for k0 in np.unique(nxt):                    # usually one value: every simulation is at the same stop
+        s = idx[nxt == k0]
         state["stop_laps"][s, i, k0:] = NO_STOP
-        for j, (lap, comp) in enumerate(sorted(plan)):
+        for j, (lap, comp) in enumerate(plan):
             if k0 + j < MAX_STOPS:
                 state["stop_laps"][s, i, k0 + j] = int(lap)
                 state["stop_comp"][s, i, k0 + j] = encode_compound(comp)
@@ -454,7 +469,8 @@ def _sec(s):
 
 def state_from_real_race(laps: pd.DataFrame, season: int, race: str, at_lap: int,
                          config: dict | None = None, future_plans: str = "actual",
-                         current_tyres: dict | None = None, plans: dict | None = None):
+                         current_tyres: dict | None = None, plans: dict | None = None,
+                         track_status: str | None = None):
     """
     Engine state at the END of lap `at_lap` of a real race (laps = FastF1-shaped table).
 
@@ -465,6 +481,8 @@ def state_from_real_race(laps: pd.DataFrame, season: int, race: str, at_lap: int
                   "none"   → no more stops planned (you decide).
     current_tyres: {driver: (compound, tyre_life)} — live use, when lap at_lap+1 does not exist yet.
     plans: {driver: [(lap, compound), …]} — overrides the remaining stops per driver.
+    track_status: live track status right now (FastF1 code, "4" = Safety Car). When given,
+                  it decides whether the SC is out instead of the leader's lap row.
     """
     r = laps[(laps["Season"] == season) & (laps["Race"] == race)].copy()
     if r.empty:
@@ -536,8 +554,10 @@ def state_from_real_race(laps: pd.DataFrame, season: int, race: str, at_lap: int
     state["cum"] = (now["T"].to_numpy(float) - now["T"].min())[None, :]
     stops_done = r[(r["LapNumber"] <= at_lap) & r["PitInTime"].notna()].groupby("Driver").size()
     state["n_stops"] = np.array([[int(stops_done.get(d, 0)) for d in drivers]])
-    status_row = nxt_rows.loc[drivers[0]] if drivers[0] in nxt_rows.index else now.loc[drivers[0]]
-    if str(status_row["TrackStatus"]).find("4") >= 0:                    # SC already out
+    if track_status is None:
+        status_row = nxt_rows.loc[drivers[0]] if drivers[0] in nxt_rows.index else now.loc[drivers[0]]
+        track_status = str(status_row["TrackStatus"])
+    if str(track_status).find("4") >= 0:                                 # SC already out
         state["sc_left"] = np.array([2])
     info = {"season": season, "race": race, "at_lap": at_lap, "total_laps": L,
             "pace": dict(zip(drivers, np.round(pace, 4))), "base_laptime": base}

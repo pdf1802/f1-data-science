@@ -86,3 +86,18 @@ def test_backtest_runs_on_a_race():
     res = backtest_race(laps, 2024, "Test Grand Prix", n_sims=50)
     assert res is not None and res["drivers"] == 20
     assert -1 <= res["rho_sim"] <= 1 and 0 <= res["cover80"] <= 1
+
+
+def test_batched_evaluate_equals_one_run_per_option(grid):
+    """evaluate() races every option in one batch; it must equal racing them one by one."""
+    live = eng.LiveRace.from_grid(grid, {"total_laps": 30}, seed=4)
+    live.step(6)
+    options = {"plan": live.plan("B"), "box now": [(7, "HARD")], "two stops": [(9, "SOFT"), (20, "HARD")]}
+    batched = live.evaluate("B", options, n_sims=40, seed=11)
+    i = live.setup["drivers"].index("B")
+    dr = eng.draw(40, live.setup["L"] - live.lap, live.setup["D"], live.cfg, 11)
+    for k, plan in enumerate(options.values()):
+        st = eng.broadcast_state(live.state, 40)
+        eng._set_plan(st, i, plan)
+        pos = eng.run_to_flag(st, live.setup, live.cfg, dr)["positions"][:, i]
+        assert batched.loc[k, "Exp. position"] == pytest.approx(pos.mean())
