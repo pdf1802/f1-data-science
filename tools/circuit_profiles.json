@@ -1,0 +1,172 @@
+{
+ "Abu Dhabi": {
+  "laps": 58,
+  "base_lap_s": 89.66,
+  "pit_loss_s": 23.3,
+  "pit_stops_measured": 112,
+  "sc_per_lap": 0.0033,
+  "sc_deployments": 0,
+  "races": [
+   "2022",
+   "2023",
+   "2024",
+   "2025"
+  ]
+ },
+ "Australian": {
+  "laps": 58,
+  "base_lap_s": 82.62,
+  "pit_loss_s": 20.5,
+  "pit_stops_measured": 32,
+  "sc_per_lap": 0.0221,
+  "sc_deployments": 4,
+  "races": [
+   "2023",
+   "2024"
+  ]
+ },
+ "Austrian": {
+  "laps": 71,
+  "base_lap_s": 70.91,
+  "pit_loss_s": 21.4,
+  "pit_stops_measured": 74,
+  "sc_per_lap": 0.0084,
+  "sc_deployments": 1,
+  "races": [
+   "2024",
+   "2025"
+  ]
+ },
+ "Azerbaijan": {
+  "laps": 51,
+  "base_lap_s": 107.41,
+  "pit_loss_s": 22.2,
+  "pit_stops_measured": 42,
+  "sc_per_lap": 0.0118,
+  "sc_deployments": 2,
+  "races": [
+   "2023",
+   "2024",
+   "2025"
+  ]
+ },
+ "Bahrain": {
+  "laps": 57,
+  "base_lap_s": 97.64,
+  "pit_loss_s": 24.8,
+  "pit_stops_measured": 142,
+  "sc_per_lap": 0.0091,
+  "sc_deployments": 2,
+  "races": [
+   "2022",
+   "2023",
+   "2024",
+   "2025"
+  ]
+ },
+ "Belgian": {
+  "laps": 44,
+  "base_lap_s": 111.69,
+  "pit_loss_s": 19.4,
+  "pit_stops_measured": 68,
+  "sc_per_lap": 0.0106,
+  "sc_deployments": 1,
+  "races": [
+   "2022",
+   "2024"
+  ]
+ },
+ "British": {
+  "laps": 52,
+  "base_lap_s": 93.63,
+  "pit_loss_s": 21.9,
+  "pit_stops_measured": 28,
+  "sc_per_lap": 0.0145,
+  "sc_deployments": 2,
+  "races": [
+   "2022",
+   "2023"
+  ]
+ },
+ "Italian": {
+  "laps": 53,
+  "base_lap_s": 84.22,
+  "pit_loss_s": 25.7,
+  "pit_stops_measured": 93,
+  "sc_per_lap": 0.0064,
+  "sc_deployments": 1,
+  "races": [
+   "2022",
+   "2023",
+   "2024",
+   "2025"
+  ]
+ },
+ "Japanese": {
+  "laps": 53,
+  "base_lap_s": 95.89,
+  "pit_loss_s": 23.9,
+  "pit_stops_measured": 49,
+  "sc_per_lap": 0.0096,
+  "sc_deployments": 1,
+  "races": [
+   "2023",
+   "2025"
+  ]
+ },
+ "Miami": {
+  "laps": 57,
+  "base_lap_s": 92.64,
+  "pit_loss_s": 20.7,
+  "pit_stops_measured": 40,
+  "sc_per_lap": 0.0074,
+  "sc_deployments": 1,
+  "races": [
+   "2023",
+   "2024",
+   "2025"
+  ]
+ },
+ "Monaco": {
+  "laps": 78,
+  "base_lap_s": 78.29,
+  "pit_loss_s": 19.1,
+  "pit_stops_measured": 41,
+  "sc_per_lap": 0.0081,
+  "sc_deployments": 1,
+  "races": [
+   "2024",
+   "2025"
+  ]
+ },
+ "Saudi Arabian": {
+  "laps": 50,
+  "base_lap_s": 94.24,
+  "pit_loss_s": 21.6,
+  "pit_stops_measured": 31,
+  "sc_per_lap": 0.0159,
+  "sc_deployments": 3,
+  "races": [
+   "2023",
+   "2024",
+   "2025"
+  ]
+ },
+ "Singapore": {
+  "laps": 62,
+  "base_lap_s": 98.24,
+  "pit_loss_s": 27.4,
+  "pit_stops_measured": 47,
+  "sc_per_lap": 0.0071,
+  "sc_deployments": 1,
+  "races": [
+   "2023",
+   "2024",
+   "2025"
+  ]
+ },
+ "_global": {
+  "sc_per_lap": 0.0098,
+  "pit_loss_s": 22.9
+ }
+}

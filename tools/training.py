@@ -286,8 +286,18 @@ def _marginal_predict(model, grid: pd.DataFrame, feats, n_circuits, predict):
     return grid.assign(P=predict(grid[feats].astype(float)))
 
 
+def deg_tail(lap_df: pd.DataFrame, physics: pd.DataFrame, quantile: float = 0.9) -> dict:
+    """Per-compound age cap (where the data thins out) + linear slope from the physics reference."""
+    caps = lap_df.groupby("CompoundEncoded")["TyreLife"].quantile(quantile)
+    names = {v: k for k, v in COMPOUND_MAP.items()}
+    return {"cap": {names[int(c)]: int(round(v)) for c, v in caps.items()},
+            "slope": {c: float(physics.loc[f"deg_{c}_per_lap", "estimate"]) for c in COMPOUND_MAP},
+            "quantile": quantile}
+
+
 def lap_model_sanity(model, teams_encoded=(0,), n_circuits: int | None = None,
-                     track_temp: float = 35.0, air_temp: float = 25.0, lap_number: int = 30) -> dict:
+                     track_temp: float = 35.0, air_temp: float = 25.0, lap_number: int = 30,
+                     tail: dict | None = None) -> dict:
     """
     Physics gate, averaged over teams and circuits so one odd value can't pass/fail it.
     What the data supports (see estimate_tyre_physics):
@@ -302,8 +312,10 @@ def lap_model_sanity(model, teams_encoded=(0,), n_circuits: int | None = None,
     grid = pd.DataFrame([{"CompoundEncoded": c, "TyreLife": a, "TeamEncoded": t, "LapNumber": lap_number,
                           "TrackTemp": track_temp, "AirTemp": air_temp, "RainfallEncoded": 0,
                           "CircuitEncoded": 0.0, "Age": a, "C": c}
-                         for t in teams_encoded for c in range(3) for a in range(2, 31)])
-    grid = _marginal_predict(model, grid, feats, n_circuits or 1, model.predict)
+                         for t in teams_encoded for c in range(3) for a in range(2, 41)])
+    from tools.shared import apply_deg_tail
+    grid = _marginal_predict(model, grid, feats, n_circuits or 1,
+                             lambda X: apply_deg_tail(X, model.predict, tail or {}))
     curve = grid.groupby(["C", "Age"])["P"].mean().unstack(0)
     curve.columns = list(COMPOUND_MAP)                               # SOFT, MEDIUM, HARD
     fresh, deg = curve.loc[2], curve.loc[20] - curve.loc[2]

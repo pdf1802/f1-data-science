@@ -109,9 +109,12 @@ def main(argv=None):
         print(f"MAE, predict the median : {ev1['predict_median_MAE']:.3f} s   ← the bar to beat ({gain:+.1%})")
         print(f"MAE, random 80/20 split : {ev1['random_split_MAE']:.3f} s   ← optimistic (same-race leakage)")
     lap_model = training.make_lap_model().fit(lap_df[training.LAP_MODEL_FEATURES], lap_df["LapDelta"])
-    s1 = training.lap_model_sanity(lap_model, n_circuits=len(circuits))
+    tail = training.deg_tail(lap_df, physics)
+    print(f"\nBeyond the data (age > {tail['cap']}) degradation continues linearly at "
+          f"{ {k: round(v, 3) for k, v in tail['slope'].items()} } s/lap (physics reference) — trees can't extrapolate.")
+    s1 = training.lap_model_sanity(lap_model, n_circuits=len(circuits), tail=tail)
     print("\nPredicted LapDelta (s) by tyre age, averaged over circuits:")
-    print(s1["curve"].loc[[2, 5, 10, 15, 20, 25, 30]].round(2).to_string())
+    print(s1["curve"].loc[[2, 5, 10, 15, 20, 25, 30, 35, 40]].round(2).to_string())
     for name, ok in s1["checks"].items():
         print(f"  {'✅' if ok else '❌'} {name}")
     beats_median = bool(ev1 and ev1["grouped_MAE"] < ev1["predict_median_MAE"])
@@ -153,7 +156,7 @@ def main(argv=None):
 
     os.makedirs(args.out, exist_ok=True)
     existing = [f for f in shared.REQUIRED_MODEL_FILES + ("compound_map.json", "circuits.json",
-                                                          "training_report.json")
+                                                          "deg_tail.json", "training_report.json")
                 if os.path.isfile(os.path.join(args.out, f))]
     if existing:
         bk = os.path.join(args.out, f"backup_{datetime.now():%Y%m%d_%H%M%S}")
@@ -168,6 +171,8 @@ def main(argv=None):
         json.dump(shared.COMPOUND_MAP, f)
     with open(os.path.join(args.out, "circuits.json"), "w") as f:
         json.dump(circuits, f, indent=1)
+    with open(os.path.join(args.out, "deg_tail.json"), "w") as f:
+        json.dump(tail, f, indent=1)
     report = {
         "trained_at": datetime.now().isoformat(timespec="seconds"),
         "version": "V3.1", "source": source, "fuel_s_per_lap": args.fuel,
@@ -175,6 +180,7 @@ def main(argv=None):
         "races_used": int(lap_df["Group"].nunique()), "wet_races_excluded": wet,
         "failed_sessions": failed, "circuits": circuits,
         "physics_reference": physics.round(4).to_dict(orient="index"),
+        "deg_tail": tail,
         "module1": {"features": training.LAP_MODEL_FEATURES, "n_laps": len(lap_df),
                     **({k: v for k, v in ev1.items() if k != "folds"} if ev1 else {}),
                     "sanity": s1["checks"],

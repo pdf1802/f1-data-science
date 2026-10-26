@@ -148,6 +148,7 @@ _LAP_MODEL = None
 _OVT_MODEL = None
 _TEAM_ENCODER = None
 _CIRCUITS: list[str] = []      # V3: circuits the models were trained on (circuits.json)
+_DEG_TAIL: dict = {}           # V3.1: linear degradation beyond the data (deg_tail.json)
 
 
 def load_models():
@@ -156,7 +157,7 @@ def load_models():
 
     Returns (lap_model, ovt_model, team_encoder).
     """
-    global _LAP_MODEL, _OVT_MODEL, _TEAM_ENCODER, _CIRCUITS
+    global _LAP_MODEL, _OVT_MODEL, _TEAM_ENCODER, _CIRCUITS, _DEG_TAIL
     if _LAP_MODEL is None:
         model_dir = resolve_model_dir()
         _LAP_MODEL = joblib.load(os.path.join(model_dir, "lap_time_model.pkl"))
@@ -172,14 +173,19 @@ def load_models():
         if os.path.isfile(circ_path):
             with open(circ_path) as f:
                 _CIRCUITS = list(json.load(f))
+        tail_path = os.path.join(model_dir, "deg_tail.json")
+        if os.path.isfile(tail_path):
+            with open(tail_path) as f:
+                _DEG_TAIL = json.load(f)
     return _LAP_MODEL, _OVT_MODEL, _TEAM_ENCODER
 
 
 def reset_models() -> None:
     """Forget cached models (used by tests to swap in stand-in models)."""
-    global _LAP_MODEL, _OVT_MODEL, _TEAM_ENCODER, _CIRCUITS
+    global _LAP_MODEL, _OVT_MODEL, _TEAM_ENCODER, _CIRCUITS, _DEG_TAIL
     _LAP_MODEL = _OVT_MODEL = _TEAM_ENCODER = None
     _CIRCUITS = []
+    _DEG_TAIL = {}
 
 
 # ── Circuits ─────────────────────────────────────────────────────────────────
@@ -284,7 +290,35 @@ def predict_lap_deltas(features: pd.DataFrame | Iterable[dict]) -> np.ndarray:
     """
     lap_model, _, _ = load_models()
     df = pd.DataFrame(features)
-    return _predict_marginal(model_features(lap_model, LAP_FEATURES), df, lap_model.predict)
+    predict = lambda d: _predict_marginal(model_features(lap_model, LAP_FEATURES), d, lap_model.predict)
+    return apply_deg_tail(df, predict, _DEG_TAIL)
+
+
+def apply_deg_tail(df: pd.DataFrame, predict, tail: dict) -> np.ndarray:
+    """
+    Trees cannot extrapolate: past the tyre ages they saw often, their prediction
+    goes FLAT — a 43-lap-old HARD looks as fast as a 30-lap-old one, which makes
+    absurdly long stints look free. (The few very old tyres in the data are also
+    survivors: stints get extended when the tyres are holding up.)
+    Beyond each compound's cap (90th percentile of the training ages) we predict
+    at the cap and continue with the linear degradation slope measured by the
+    fixed-effects reference model (training.estimate_tyre_physics).
+    """
+    if not tail:
+        return np.asarray(predict(df))
+    df = df.copy()
+    extra = np.zeros(len(df))
+    comp = df["CompoundEncoded"].to_numpy(dtype=float)
+    age = df["TyreLife"].to_numpy(dtype=float)
+    for name, code in COMPOUND_MAP.items():
+        cap, slope = tail["cap"].get(name), tail["slope"].get(name)
+        if cap is None or slope is None:
+            continue
+        over = (comp == code) & (age > cap)
+        extra[over] = slope * (age[over] - cap)
+        age[over] = cap
+    df["TyreLife"] = age
+    return np.asarray(predict(df)) + extra
 
 
 def model_features(model, default: list[str]) -> list[str]:

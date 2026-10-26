@@ -86,7 +86,10 @@ def undercut_analysis(chaser: DriverState, leader: DriverState, current_gap: flo
     """
     new_c = encode_compound(new_compound)
     lead_c = encode_compound(leader_compound) if leader_compound is not None else new_c
-    pit_cost = PIT_COST_SC if sc_active else PIT_COST_GREEN
+    from tools.circuit_profiles import profile_for
+    prof = profile_for(config.get("circuit")) or {}
+    green = config.get("pit_loss") or prof.get("pit_loss_s") or PIT_COST_GREEN   # measured per circuit
+    pit_cost = green * PIT_COST_SC / PIT_COST_GREEN if sc_active else green
     pf = config.get("pace_factors", {})
     rng = rng or np.random.default_rng(0)
 

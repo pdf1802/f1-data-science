@@ -195,9 +195,15 @@ with tabs[0]:
     else:
         from tools.race_simulator import (DEFAULT_CONFIG, grid_from_qualifying,
                                           position_distribution, validate_grid)
+        from tools.circuit_profiles import profile_for
         year, gp = event_picker("sim")
+        prof = profile_for(gp) or {}
+        if prof:
+            st.caption(f"Circuit profile (measured on {len(prof['races'])} dry races): {prof['laps']} laps · "
+                       f"typical lap {prof['base_lap_s']:.1f} s · pit loss {prof['pit_loss_s']} s · "
+                       f"Safety Car {prof['sc_per_lap'] * 100:.1f} % per lap")
         c1, c2, c3, c4 = st.columns(4)
-        total_laps = c1.number_input("Race laps", 20, 80, 52)
+        total_laps = c1.number_input("Race laps", 20, 80, int(prof.get("laps", 52)))
         start_c = c2.selectbox("Default start tyre", COMPOUNDS, index=1)
         next_c = c3.selectbox("Default 2nd tyre", COMPOUNDS, index=2)
         pit_lap = c4.number_input("Default pit lap", 2, 78, int(round(52 * 0.45)))
@@ -233,8 +239,9 @@ with tabs[0]:
                 d1, d2, d3, d4 = st.columns(4)
                 track_temp = d1.slider("Track temp (°C)", 15, 55, 35)
                 air_temp = d2.slider("Air temp (°C)", 10, 40, 25)
-                sc_prob = d3.slider("SC probability / lap", 0.0, 0.05, DEFAULT_CONFIG["sc_prob_per_lap"],
-                                    0.002, format="%.3f")
+                sc_prob = d3.slider("SC probability / lap", 0.0, 0.05,
+                                    float(prof.get("sc_per_lap", DEFAULT_CONFIG["sc_prob_per_lap"])),
+                                    0.001, format="%.3f")
                 sc_window = d4.slider("Box under SC if stop ≤ N laps away", 0, 15,
                                       DEFAULT_CONFIG["sc_pit_window"])
                 e1, e2, e3 = st.columns(3)
@@ -478,14 +485,17 @@ with tabs[3]:
     else:
         from tools.stint_optimizer import compare_strategies
         teams = shared.get_known_teams()
+        from tools.circuit_profiles import profile_for
         so_circuit = circuit_picker(st, "so_circuit")
+        so_prof = profile_for(so_circuit) or {}
         c = st.columns(5)
-        laps_ = c[0].number_input("Race laps", 20, 80, 57, key="so_l")
+        laps_ = c[0].number_input("Race laps", 20, 80, int(so_prof.get("laps", 57)), key=f"so_l_{so_circuit}")
         team = c[1].selectbox("Team", teams, teams.index("Red Bull Racing") if "Red Bull Racing" in teams else 0,
                               key="so_t")
         tt = c[2].slider("Track °C", 15, 55, 35, key="so_tt")
         at = c[3].slider("Air °C", 10, 40, 25, key="so_at")
-        pc = c[4].number_input("Pit loss (s)", 15.0, 35.0, shared.PIT_COST_GREEN, 0.5, key="so_pc")
+        pc = c[4].number_input("Pit loss (s)", 15.0, 35.0, float(so_prof.get("pit_loss_s") or shared.PIT_COST_GREEN),
+                               0.5, key=f"so_pc_{so_circuit}", help="Measured per circuit from real green-flag stops.")
         df = compare_strategies(int(laps_), team, {"track_temp": tt, "air_temp": at, "circuit": so_circuit},
                                 pit_cost=pc)
 
@@ -493,7 +503,13 @@ with tabs[3]:
         st.markdown(f"#### Best 1-stop: {best['Strategy']}")
         k2, k3 = st.columns(2)
         k2.metric("Optimal pit lap", f"L{best['Optimal pit lap']}", best["Window (±1 s)"], delta_color="off", delta_arrow="off")
-        k3.metric("Margin over 2nd best", f"{df['Gap to best (s)'].iloc[1]:.2f} s")
+        pair = lambda st_: frozenset(st_.split(" → "))
+        others = df[df["Strategy"].map(pair) != pair(best["Strategy"])]
+        k3.metric("Margin over next compound pair", f"{others['Gap to best (s)'].iloc[0]:.2f} s",
+                  help="SOFT→HARD and HARD→SOFT (with the stop at the mirrored lap) cost the same in the "
+                       "V3 tyre model: fuel is identical for every plan, so only stint lengths matter. "
+                       "Teams usually start on the softer tyre for launch grip — something the model "
+                       "does not know.")
 
         fig = go.Figure()
         for _, row in df.iterrows():

@@ -39,40 +39,16 @@ change help?).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
 
-from tools.shared import (BASE_LAPTIME, DRS_WINDOW, NOISE_STD, PIT_COST_GREEN,
-                          PIT_COST_SC, encode_circuit, encode_compound, encode_team,
-                          lap_time_from_delta, predict_lap_deltas,
-                          predict_overtake_probability)
+from tools.race_engine import (DEFAULT_CONFIG, DIRTY_AIR_PENALTY, MIN_FOLLOW_GAP,  # noqa: F401
+                               RACE_FORM_STD, SC_COMPRESS, SC_LAP_FACTOR, SC_MIN_GAP, START_GAP,
+                               START_STD, build_setup, draw, initial_state, resolve_config,
+                               run_to_flag)
 
 POINTS = np.array([25, 18, 15, 12, 10, 8, 6, 4, 2, 1] + [0] * 30)
-
-START_GAP = 0.25          # s between consecutive grid slots after lap 1
-MIN_FOLLOW_GAP = 0.30     # s — can't cross the line closer than this behind a car you failed to pass
-DIRTY_AIR_PENALTY = 0.20  # s/lap when within DRS_WINDOW of the car ahead
-PIT_NOISE_STD = 0.8       # s — stop-to-stop variation
-RACE_FORM_STD = 0.12      # s/lap — per-race pace offset per driver (set-up, track evolution, a good/bad day)
-START_STD = 0.6           # s — lap-1 chaos: launch, first-corner positioning
-SC_LAP_FACTOR = 1.35      # SC lap ≈ 35 % slower than a racing lap
-SC_COMPRESS = 0.35        # each SC lap keeps 35 % of every gap…
-SC_MIN_GAP = 0.6          # …but cars queue no closer than this
-
-DEFAULT_CONFIG = {
-    "total_laps": 52,
-    "track_temp": 35.0,
-    "air_temp": 25.0,
-    "rainfall": 0,
-    "sc_prob_per_lap": 0.012,      # ≈ 45 % chance of at least one SC in 52 laps
-    "sc_min_laps": 3,
-    "sc_max_laps": 5,
-    "sc_pit_window": 8,            # box under SC if planned stop is ≤ N laps away (0 = never)
-    "dnf_prob_per_lap": 0.0004,    # ≈ 2 % per car per race
-    "base_laptime": BASE_LAPTIME,
-}
 
 GRID_COLUMNS = ["Driver", "Team", "Grid", "PaceFactor", "StartCompound", "StartAge",
                 "Stop1Lap", "Stop1Compound", "Stop2Lap", "Stop2Compound"]
@@ -117,188 +93,26 @@ def validate_grid(grid: pd.DataFrame, total_laps: int) -> list[str]:
     return errs
 
 
-# ── Core simulation ──────────────────────────────────────────────────────────
-@dataclass
-class _Draws:
-    """All randomness for one batch, pre-drawn so two scenarios can share it."""
-    lap_noise: np.ndarray    # (S, L, D)
-    pit_noise: np.ndarray    # (S, L, D)
-    sc_u: np.ndarray         # (S, L)
-    sc_len: np.ndarray       # (S, L)
-    ovt_u: np.ndarray        # (S, L, D)  indexed by running position
-    dnf_u: np.ndarray        # (S, L, D)
-    form: np.ndarray         # (S, D)
-    start: np.ndarray        # (S, D)
-
-
-def _draw(n_sims: int, n_laps: int, n_drivers: int, cfg: dict, seed: int) -> _Draws:
-    rng = np.random.default_rng(seed)
-    S, L, D = n_sims, n_laps, n_drivers
-    return _Draws(
-        lap_noise=rng.normal(0, NOISE_STD, (S, L, D)),
-        pit_noise=rng.normal(0, PIT_NOISE_STD, (S, L, D)),
-        sc_u=rng.random((S, L)),
-        sc_len=rng.integers(cfg["sc_min_laps"], cfg["sc_max_laps"] + 1, (S, L)),
-        ovt_u=rng.random((S, L, D)),
-        dnf_u=rng.random((S, L, D)),
-        form=rng.normal(0, RACE_FORM_STD, (S, D)),
-        start=rng.normal(0, START_STD, (S, D)),
-    )
-
-
-def _delta_table(teams_enc: np.ndarray, n_laps: int, max_age: int, cfg: dict) -> np.ndarray:
-    """LapDelta for every (team, compound, tyre age, lap) → array [T, 3, max_age+1, n_laps+1]."""
-    T = len(teams_enc)
-    t, c, a, l = np.meshgrid(np.arange(T), np.arange(3), np.arange(1, max_age + 1),
-                             np.arange(1, n_laps + 1), indexing="ij")
-    rows = pd.DataFrame({
-        "CompoundEncoded": c.ravel(), "TyreLife": a.ravel(), "TeamEncoded": teams_enc[t.ravel()],
-        "LapNumber": l.ravel(), "TrackTemp": cfg["track_temp"], "AirTemp": cfg["air_temp"],
-        "RainfallEncoded": cfg.get("rainfall", 0),
-        "CircuitEncoded": encode_circuit(cfg.get("circuit")),
-    })
-    table = np.zeros((T, 3, max_age + 1, n_laps + 1))
-    table[t.ravel(), c.ravel(), a.ravel(), l.ravel()] = predict_lap_deltas(rows)
-    return table
+# ── Core simulation (the engine lives in tools/race_engine.py) ─────────────────
+def plans_from_grid(g: pd.DataFrame) -> list[list[tuple[int, str]]]:
+    plans = []
+    for _, r in g.iterrows():
+        plans.append([(int(r[f"Stop{k}Lap"]), r[f"Stop{k}Compound"]) for k in (1, 2)
+                      if pd.notna(r.get(f"Stop{k}Lap")) and int(r[f"Stop{k}Lap"]) > 0])
+    return plans
 
 
 def _prepare(grid: pd.DataFrame, cfg: dict) -> dict:
     g = grid.sort_values("Grid").reset_index(drop=True)
-    D, L = len(g), cfg["total_laps"]
-    team_names = g["Team"].tolist()
-    uniq = sorted(set(team_names))
-    team_idx = np.array([uniq.index(t) for t in team_names])
-    stop_laps = np.full((D, 3), 10_000)
-    stop_comp = np.zeros((D, 3), dtype=int)
-    for i, r in g.iterrows():
-        k = 0
-        for s in (1, 2):
-            lap = r.get(f"Stop{s}Lap")
-            if pd.notna(lap) and int(lap) > 0:
-                stop_laps[i, k], stop_comp[i, k] = int(lap), encode_compound(r[f"Stop{s}Compound"])
-                k += 1
-    max_age = L + int(g["StartAge"].max()) + 1
-    return {
-        "grid": g, "D": D, "L": L, "team_idx": team_idx,
-        "pace": g["PaceFactor"].astype(float).to_numpy(),
-        "start_comp": np.array([encode_compound(c) for c in g["StartCompound"]]),
-        "start_age": g["StartAge"].astype(int).to_numpy(),
-        "stop_laps": stop_laps, "stop_comp": stop_comp, "max_age": max_age,
-        "table": _delta_table(np.array([encode_team(t) for t in uniq]), L, max_age, cfg),
-    }
+    setup = build_setup(g["Driver"], g["Team"], g["PaceFactor"].astype(float), g["StartCompound"],
+                        g["StartAge"].astype(int), plans_from_grid(g), cfg)
+    setup["grid"] = g
+    return setup
 
 
-def _run(p: dict, cfg: dict, dr: _Draws, record_trace: bool = True) -> dict:
-    S, D, L = dr.sc_u.shape[0], p["D"], p["L"]
-    base = cfg.get("base_laptime", BASE_LAPTIME)
-    circuit_enc = encode_circuit(cfg.get("circuit"))       # NaN → averaged over known circuits
-    sims = np.arange(S)[:, None]
-    drv = np.arange(D)[None, :]
-
-    cum = np.arange(D)[None, :] * START_GAP + np.abs(dr.start)   # grid slot + launch loss
-    comp = np.broadcast_to(p["start_comp"], (S, D)).copy()
-    age = np.broadcast_to(p["start_age"], (S, D)).copy()
-    nxt = np.zeros((S, D), dtype=int)                    # index of next planned stop
-    retired = np.zeros((S, D), dtype=bool)
-    sc_left = np.zeros(S, dtype=int)
-    sc_count = np.zeros(S, dtype=int)
-    overtakes = np.zeros(S, dtype=int)
-    n_stops = np.zeros((S, D), dtype=int)
-    trace_pos, trace_gap = [], []
-    BIG = 1e9
-
-    for lap in range(1, L + 1):
-        li = lap - 1
-        # --- Safety Car state
-        deploy = (sc_left == 0) & (dr.sc_u[:, li] < cfg["sc_prob_per_lap"]) & (lap > 1) & (lap < L - 1)
-        sc_left = np.where(deploy, dr.sc_len[:, li], sc_left)
-        sc_count += deploy
-        sc = sc_left > 0
-
-        # --- Pit decisions (planned, or opportunistic under SC)
-        planned_lap = p["stop_laps"][drv, np.minimum(nxt, 2)]
-        planned_lap = np.where(nxt >= 2, 10_000, planned_lap)
-        has_stop = planned_lap < 10_000
-        pit = has_stop & (planned_lap == lap)
-        if cfg.get("sc_pit_window", 0) > 0:
-            pit |= has_stop & sc[:, None] & (planned_lap - lap <= cfg["sc_pit_window"]) & (planned_lap > lap)
-        pit &= ~retired
-
-        # --- Lap times
-        delta = p["table"][p["team_idx"][None, :], comp, np.minimum(age, p["max_age"]), lap]
-        racing = lap_time_from_delta(delta, p["pace"][None, :], base) + dr.form + dr.lap_noise[:, li]
-        sc_time = base * SC_LAP_FACTOR + 0.1 * dr.lap_noise[:, li]
-        lt = np.where(sc[:, None], sc_time, racing)
-        pit_cost = np.where(sc, PIT_COST_SC, PIT_COST_GREEN)[:, None] + dr.pit_noise[:, li]
-        lt = lt + np.where(pit, pit_cost, 0.0)
-
-        # --- Running order at the start of the lap
-        order = np.argsort(np.where(retired, BIG, cum), axis=1)
-        cum_o = np.take_along_axis(cum, order, 1)
-        gap_prev = np.diff(cum_o, axis=1, prepend=cum_o[:, :1])         # gap to car ahead (0 for leader)
-
-        # dirty air (green only)
-        lt_o = np.take_along_axis(lt, order, 1)
-        close = (np.arange(D)[None, :] > 0) & (gap_prev < DRS_WINDOW) & ~sc[:, None]
-        lt_o = lt_o + np.where(close, DIRTY_AIR_PENALTY, 0.0)
-
-        # Module 2 — one call for every in-range pair in every sim
-        comp_o, age_o = np.take_along_axis(comp, order, 1), np.take_along_axis(age, order, 1)
-        prob = np.zeros((S, D))
-        ask = close.copy()
-        if ask.any():
-            si, pi = np.nonzero(ask)
-            prob[si, pi] = predict_overtake_probability(
-                gap_prev[si, pi], comp_o[si, pi], comp_o[si, pi - 1], age_o[si, pi],
-                age_o[si, pi - 1], np.full(len(si), lap), pi + 1, circuit=circuit_enc)
-
-        # sequential pass down the order: held up unless the pass succeeds
-        cand = cum_o + lt_o
-        pit_o = np.take_along_axis(pit, order, 1)
-        ret_o = np.take_along_axis(retired, order, 1)
-        new = cand.copy()
-        front = np.where(pit_o[:, 0] | ret_o[:, 0], -BIG, cand[:, 0])
-        for i in range(1, D):
-            c = cand[:, i]
-            active = ~ret_o[:, i] & ~pit_o[:, i]
-            blocked = active & (c < front + MIN_FOLLOW_GAP)
-            passed = blocked & ~sc & (gap_prev[:, i] < DRS_WINDOW) & (dr.ovt_u[:, li, i] < prob[:, i])
-            overtakes += passed
-            new[:, i] = np.where(blocked & ~passed, front + MIN_FOLLOW_GAP, c)
-            front = np.where(active, np.maximum(front, new[:, i]), front)
-
-        # --- Safety Car bunching (after the lap, in the NEW order)
-        if sc.any():
-            o2 = np.argsort(np.where(ret_o, BIG, new), axis=1)
-            n2 = np.take_along_axis(new, o2, 1)
-            r2 = np.take_along_axis(ret_o, o2, 1)
-            gaps = np.diff(n2, axis=1)
-            gaps = np.where(sc[:, None], np.maximum(SC_MIN_GAP, gaps * SC_COMPRESS), gaps)
-            n2 = np.where(r2, n2, np.concatenate([n2[:, :1], n2[:, :1] + np.cumsum(gaps, 1)], 1))
-            np.put_along_axis(new, o2, n2, 1)
-
-        # back to driver indexing
-        np.put_along_axis(cum, order, new, 1)
-
-        # --- Tyre / stop bookkeeping, retirements
-        comp = np.where(pit, p["stop_comp"][drv, np.minimum(nxt, 2)], comp)
-        age = np.where(pit, 1, age + 1)
-        nxt += pit
-        n_stops += pit
-        newly_out = ~retired & (dr.dnf_u[:, li] < cfg.get("dnf_prob_per_lap", 0.0))
-        retired |= newly_out
-        sc_left = np.maximum(sc_left - 1, 0)
-
-        if record_trace:
-            pos = np.argsort(np.argsort(np.where(retired, BIG, cum), 1), 1) + 1
-            trace_pos.append(pos[0])
-            trace_gap.append(np.where(retired[0], np.nan, cum[0] - cum[0][~retired[0]].min()))
-
-    final = np.where(retired, BIG + cum, cum)
-    positions = np.argsort(np.argsort(final, 1), 1) + 1                     # (S, D)
-    return {"positions": positions, "retired": retired, "race_time": cum,
-            "sc_count": sc_count, "overtakes": overtakes, "n_stops": n_stops,
-            "trace_pos": np.array(trace_pos), "trace_gap": np.array(trace_gap)}
+def _run(setup: dict, cfg: dict, dr) -> dict:
+    state = initial_state(setup, dr.sc_u.shape[0], np.abs(dr.start))   # grid slot + launch loss
+    return run_to_flag(state, setup, cfg, dr, record_trace=True)
 
 
 def summarise(res: dict, grid: pd.DataFrame) -> pd.DataFrame:
@@ -328,9 +142,9 @@ def position_distribution(res: dict, grid: pd.DataFrame) -> pd.DataFrame:
 
 def simulate(grid: pd.DataFrame, config: dict | None = None, n_sims: int = 500,
              seed: int = 42) -> dict:
-    cfg = {**DEFAULT_CONFIG, **(config or {})}
+    cfg = resolve_config(config)
     p = _prepare(grid, cfg)
-    dr = _draw(n_sims, cfg["total_laps"], p["D"], cfg, seed)
+    dr = draw(n_sims, cfg["total_laps"], p["D"], cfg, seed)
     res = _run(p, cfg, dr)
     res["grid"] = p["grid"]
     res["summary"] = summarise(res, p["grid"])
@@ -344,11 +158,11 @@ def what_if(base_grid: pd.DataFrame, new_grid: pd.DataFrame, focus_driver: str,
     Same draws for both scenarios (common random numbers) → paired comparison.
     Both grids must contain the same drivers in the same grid order.
     """
-    cfg = {**DEFAULT_CONFIG, **(config or {})}
+    cfg = resolve_config(config)
     pb, pn = _prepare(base_grid, cfg), _prepare(new_grid, cfg)
     if list(pb["grid"]["Driver"]) != list(pn["grid"]["Driver"]):
         raise ValueError("Both scenarios need the same drivers in the same grid order.")
-    dr = _draw(n_sims, cfg["total_laps"], pb["D"], cfg, seed)
+    dr = draw(n_sims, cfg["total_laps"], pb["D"], cfg, seed)
     rb, rn = _run(pb, cfg, dr), _run(pn, cfg, dr)
 
     i = list(pb["grid"]["Driver"]).index(focus_driver)
