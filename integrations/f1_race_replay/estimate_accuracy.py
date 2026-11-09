@@ -8,13 +8,15 @@ lapped cars) have not crossed it yet: their lap-N line time is estimated. This s
 replays real races through the stand-in stream, makes that estimate at every lap, and
 compares it with the time the car really crossed.
 
-Three numbers, on purpose:
-  engineer        what the Race Engineer does: recent pace, and the frame's rel_dist only in
-                  the last 10 % of the lap (REL_TRUST) where distance ≈ time
-  pace only       no frame information at all: last crossing + recent pace
-  rel_dist        rel_dist everywhere. Optimistic here: the stand-in's rel_dist is elapsed time
-                  / the lap's REAL duration, so part of the answer is baked in. Real frames give
-                  distance along the lap — accuracy on real frames is not measured.
+Three ways to estimate, on purpose:
+  engineer              what the Race Engineer does: last crossing + recent pace (rel_dist unused)
+  rel_dist last 10 %    the previous version: the frame's rel_dist in the last 10 % of the lap
+  rel_dist everywhere   rel_dist all round the lap
+
+On this stand-in stream rel_dist looks good only because the stand-in builds it from
+the lap's REAL duration (elapsed time / lap time), so part of the answer is baked in.
+On real f1-race-replay frames (distance-based) it is worse than pace alone:
+see real_payloads.py, which runs the same measurement on the real replay.
 """
 
 from __future__ import annotations
@@ -29,6 +31,7 @@ from integrations.f1_race_replay.replay_stream import RaceFeed
 from tools import race_engineer as re_
 from tools.shared import REPO_ROOT
 
+MODES = (("engineer", re_.REL_TRUST), ("rel_dist last 10 %", 0.9), ("rel_dist everywhere", 0.0))
 DEFAULT = [("2023 Bahrain Grand Prix", "ALO"), ("2024 Italian Grand Prix", "LEC"), ("2025 Monaco Grand Prix", "NOR")]
 
 
@@ -42,11 +45,10 @@ def measure(laps: pd.DataFrame, season: int, race: str, driver: str) -> pd.DataF
         p = feed.payload(t)
         done, _ = re_.laps_from_payload(p, race, feed.total_laps)
         trust = re_.REL_TRUST
-        for mode, frame, rel_trust in (("engineer", p["frame"]["drivers"], trust), ("pace only", {}, trust),
-                                       ("rel_dist", p["frame"]["drivers"], 0.0)):
+        for mode, rel_trust in MODES:
             re_.REL_TRUST = rel_trust
             try:
-                snap, _, _, est = re_.snapshot_at_lap(done, n, t, frame)
+                snap, _, _, est = re_.snapshot_at_lap(done, n, t, p["frame"]["drivers"])
             finally:
                 re_.REL_TRUST = trust
             at_n = snap[snap["LapNumber"] == n].set_index("Driver")["Time"].dt.total_seconds()

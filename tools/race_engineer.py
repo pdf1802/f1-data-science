@@ -58,10 +58,13 @@ MIN_CALL_LAP = 3           # no calls on the opening laps (pace not known yet)
 # takes less). Counting the field's laps instead of seconds keeps everyone in during a red flag.
 OUT_FIELD_LAPS, OUT_WITNESSES = 3, 3
 STOPPED_S = 20.0           # s of replay time without moving → parked (retired), unless red flag
-# Trust the frame's rel_dist only in the last 10 % of a lap. It is DISTANCE along the lap, and
-# speed is not constant round a lap: mid-lap a few % of distance/time mismatch is seconds of
-# error. Near the line that mismatch vanishes; elsewhere recent pace is the better guess.
-REL_TRUST = 0.9
+# The frame's rel_dist is NOT used to estimate when a car will cross the line (None = never;
+# 0.9 = only in the last 10 % of the lap). Measured on REAL f1-race-replay payloads (Bahrain
+# 2023, real_payloads.py): last crossing + recent pace is off by 0.26 s (median), 0.23 s within
+# 10 s of the line; adding rel_dist in the last 10 % made that 1.18 s, everywhere 1.79 s. The real
+# rel_dist is distance along a reference lap whose zero is not exactly the timing line. On the
+# stand-in stream rel_dist looked better only because it is built from the lap's real duration.
+REL_TRUST: float | None = None
 STAY = "Stay out (default plan)"
 OPTION_COLUMNS = ["Option", "P(win)", "P(podium)", "P(points)", "Exp. position",
                   "Gain vs first (places)", "Gain 95% CI"]
@@ -289,7 +292,8 @@ def snapshot_at_lap(laps: pd.DataFrame, n: int, t_now: float, frame_drivers: dic
         if not (g["LapNumber"] == n).any():
             if last_lap > n:                                  # gap in the data: back off from a later lap
                 t_n = last_t - (last_lap - n) * pace
-            elif rel is not None and cur_lap == n == last_lap + 1 and REL_TRUST <= rel < 1.0:
+            elif (REL_TRUST is not None and rel is not None and cur_lap == n == last_lap + 1
+                  and REL_TRUST <= rel < 1.0):
                 t_n = t_now + (1.0 - rel) * pace                # about to cross line n
             else:
                 # on its out-lap (last completed lap ended in the pit lane): ~82 % of the stop is still to come
