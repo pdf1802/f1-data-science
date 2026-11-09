@@ -440,7 +440,10 @@ class ReplaySession:
         return isinstance(self.feed, TakeControlFeed)
 
     def take_over_lap(self, t: float) -> int:
-        """Last lap the leader has completed at replay time t, clamped to what the engine accepts."""
+        """
+        Last lap the leader has completed at replay time t, clamped to what the engine accepts
+        (lap 1 before the leader has completed one: the real race then runs to the end of lap 1).
+        """
         done = max((self.feed._progress(d, t)["done"] for d in self.feed.tl), default=0)
         return int(min(max(done, 1), self.feed.total_laps - 2))
 
@@ -470,8 +473,11 @@ class ReplaySession:
     def payload(self, t: float) -> dict:
         out = self.feed.payload(t)
         if not self.in_control:
-            out["take_control"] = {"available": True, "active": False, "from_lap": None,
-                                   "would_take_over_at": self.take_over_lap(t), "log": self.log[-12:]}
+            done = max((self.feed._progress(d, t)["done"] for d in self.feed.tl), default=0)
+            too_late = done >= self.feed.total_laps - 1
+            out["take_control"] = {"available": True, "active": False, "from_lap": None, "too_late": too_late,
+                                   "would_take_over_at": None if too_late else self.take_over_lap(t),
+                                   "log": self.log[-12:]}
         return out
 
     @property

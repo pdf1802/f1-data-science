@@ -166,10 +166,11 @@ thread, and is skipped if PySide6 is not installed.
   they do".
 - Dry races only: on INTERMEDIATE / WET the window says so and makes no call.
 - Line times of cars behind are estimates. **Measured on the real f1-race-replay stream**
-  (`python -m integrations.f1_race_replay.real_payloads`, Bahrain 2023 following ALO, 701 estimates): median
-  error **0.26 s** (90 % under 1.9 s) when that car does not stop in the lap, 0.23 s within 10 s of the line,
-  2.8 s when it does stop (an in-lap's stop is still in the future). Using `rel_dist` in the last 10 % of the
-  lap (the previous version) gave 1.18 s within 10 s of the line; all round the lap, 1.79 s. On the stand-in
+  (`python -m integrations.f1_race_replay.real_payloads`, one race: Bahrain 2023 following ALO, 701
+  estimates): median error **0.26 s** (90 % under 1.9 s) when that car does not stop in the lap, 0.23 s within
+  10 s of the line, 2.8 s when it does stop (an in-lap's stop is still in the future). Using `rel_dist` in the
+  last 10 % of the lap (the previous version): 0.40 s overall and 1.18 s within 10 s of the line; all round the
+  lap: 1.79 s overall. On the stand-in
   stream (`estimate_accuracy.py`) `rel_dist` looks almost perfect (0.02 s) — because the stand-in builds it from
   the lap's real duration: a leak, which is why the real stream is the one that decides.
 - Take-control: no DNFs and no new weather; only with the stand-in stream.

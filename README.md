@@ -30,7 +30,7 @@ Each notebook walks through the tool step by step, shows the **real source** fro
 
 | # | Notebook | Question | Uses | Validated on |
 |---|----------|----------|------|--------------|
-| **1** | [`undercut_calculator.ipynb`](notebooks/undercut_calculator.ipynb) | Will the undercut actually work right now? | M1, M2 | every real undercut attempt in 36 dry races (101) |
+| **1** | [`undercut_calculator.ipynb`](notebooks/undercut_calculator.ipynb) | Will the undercut actually work right now? | M1, M2 | 101 real undercut attempts the leader answered within 3 laps |
 | **2** | [`stint_optimizer.ipynb`](notebooks/stint_optimizer.ipynb) | What's the optimal pit lap for this stint? | M1 | 193 real one-stops in 25 races |
 | **3** | [`race_simulator.ipynb`](notebooks/race_simulator.ipynb) | How does the race play out lap by lap? | M1, M2, engine | 20 races from the grid, real strategies |
 | **4** | [`qualy_predictor.ipynb`](notebooks/qualy_predictor.ipynb) | Is pole pace real race pace? | M1 | 20 races vs qualifying order |
@@ -121,7 +121,7 @@ Details in the [integration README](integrations/f1_race_replay/README.md).
 ### Run the tests
 
 ```bash
-python -m pytest -q        # 88 tests, ~30 s
+python -m pytest -q        # 89 tests, ~30 s
 ```
 
 The tests run on small **stand-in models** with the same feature contracts as the real ones (built in `tests/conftest.py`), so they check logic and contracts — not prediction quality. `F1_USE_REAL_MODELS=1` runs them against your trained models. The window tests run offscreen and are skipped without PySide6.
@@ -157,20 +157,20 @@ It beats the baseline on races it has never seen, but only just: compound, tyre 
 
 Out of sample the engine loses a little, as it should, and still beats the baseline clearly. `RACE_FORM_STD = 0.25 s/lap` is the value whose 80 % intervals contain the real position ~80 % of the time (in-sample: 0.12 → 68 %, overconfident; 0.40 → 88 %, too cautious; the log score prefers 0.30 by a hair). Out of sample the baseline wins 9 races: clearly in Melbourne 2023 (ρ 0.61 vs 0.78, three red flags), Singapore 2023 (0.61 vs 0.76) and Monaco 2024 (0.79 vs 0.97, where the order barely changes), narrowly in the other six.
 
-**Race Engineer — on the real f1-race-replay stream.** `real_payloads.py` builds f1-race-replay's own replay window for a cached race and captures the payload it broadcasts at every moment. Following Alonso through Bahrain 2023: **53 calls, laps 3–55, one per lap, nobody dropped from the tower.** Cars behind the followed driver have not crossed the line yet when the call is made, so their line time is estimated. On the real stream, last crossing + recent pace is off by **0.26 s** (median; 0.23 s within 10 s of the line; 2.8 s when the car stops in that lap). Using the frame's `rel_dist` near the line — as the previous version did — made it **1.18 s**: on real frames `rel_dist` is distance along a reference lap whose zero is not exactly the timing line. On the stand-in stream it had looked excellent (0.02 s) only because the stand-in builds `rel_dist` from the lap's real duration — it leaked the answer. `rel_dist` is no longer used.
+**Race Engineer — on the real f1-race-replay stream.** `real_payloads.py` builds f1-race-replay's own replay window for a cached race and captures the payload it broadcasts at every moment. Following Alonso through Bahrain 2023: **53 calls, laps 3–55, one per lap, nobody dropped from the tower.** Cars behind the followed driver have not crossed the line yet when the call is made, so their line time is estimated. On the real stream, last crossing + recent pace is off by **0.26 s** (median, cars that don't stop in that lap; 2.8 s when they do). Using the frame's `rel_dist` in the last 10 % of the lap — as the previous version did — made it 0.40 s overall and **1.18 s within 10 s of the line, vs 0.23 s** without it: on real frames `rel_dist` is distance along a reference lap whose zero is not exactly the timing line. On the stand-in stream it had looked excellent (0.02 s near the line) only because the stand-in builds `rel_dist` from the lap's real duration — it leaked the answer. `rel_dist` is no longer used. (One race, one driver: a check, not a benchmark.)
 
 **Tools, validated on real races** (each in its notebook):
 
 | Tool | Check | Result |
 |---|---|---|
-| Undercut | 101 real undercut attempts (A within 3 s, pits first; green flag) | When it says BOX BOX it worked **71 %** of the time (base rate 47 %); it calls 32 % of the ones that worked — conservative by design (worst case: leader reacts next lap). Gap at B's out-lap: median error 2.1 s |
+| Undercut | 101 real undercut attempts the leader answered within 3 laps (A within 3 s behind, pits first; green flag) | When it says BOX BOX it worked **71 %** of the time (15/21, 95 % CI 48–89 %; base rate 47 %); it calls 32 % of the ones that worked — conservative by design (worst case: leader reacts next lap). Gap at B's out-lap: median error 2.2 s. When the leader waited longer than 3 laps (116 more attempts), 66 % worked |
 | Stint Optimizer | 193 real one-stops in 25 races | 51 % inside the ±1 s window; teams stop earlier (MEDIUM → HARD lap 20 vs 27 optimal). Nobody one-stopped in Bahrain in four seasons |
-| Race Simulator | 20 races from the real grid with the real strategies | ρ **0.875** vs 0.862 for the grid order, better in 14/20; real position inside the simulated 10–90 % range **80 %** of the time |
+| Race Simulator | 20 races from the real grid with the real strategies | ρ **0.883** vs 0.862 for the grid order, better in 14/20 (paired t-test p = 0.015); real position inside the simulated 10–90 % range **80 %** of the time |
 | Qualy → Race | 20 races | Identical to the qualifying order (ρ 0.862): every V3.1 correction is the same for all drivers — shown, not hidden |
 | What-If | paired vs unpaired, 2,000 races | Common random numbers make the 95 % interval **2.5× narrower** (≈ 6× fewer simulations for the same precision) |
-| Telemetry Clash | Bahrain Q 2024, VER vs LEC | Gap at the line exact (14.0 ms); per-corner alignment error estimated at 40–200 ms |
+| Telemetry Clash | Bahrain Q 2024, VER vs LEC | Per-corner alignment error estimated from GPS at 40–200 ms — as large as the gains, so single corners are indicative (the gap at the line matches the official 14 ms by construction) |
 
-**Module 3 (V3)** — 18 correctly labelled qualifying sessions (2024–2025), a per-lap data-quality gate and a robust full-throttle threshold. HAM + LEC are still neighbours (smoothest throttle, least coasting); VER sits with PER, ALO and STR (most full throttle); NOR + PIA are no longer a cluster of their own once Norris's 98 %-capped throttle signal is read correctly — they join RUS, GAS, TSU, HAD and RIC. Team-mates often share a cluster: the car shows through.
+**Module 3 (V3)** — 18 correctly labelled qualifying sessions (2024–2025), a per-lap data-quality gate, a robust full-throttle threshold, and every driver compared with the field **in the same session** before averaging (85–94 % of the variance of three features is between circuits, and drivers ran different circuits). HAM + LEC are still neighbours (smoothest throttle, least coasting), with SAI, ANT and BEA; VER sits with PER, ALO, STR and RUS (most full throttle); NOR + PIA share a group with GAS, TSU, RIC and LAW (least braking, most minimum speed). Team-mates split at Mercedes, Williams, Haas and Sauber: the clusters are less team-shaped than with raw averages.
 
 ---
 
@@ -187,7 +187,7 @@ Acknowledging limitations is a feature of the project, not a bug.
 - **Dry races only.** Seven wet races are excluded from training; on INTERMEDIATE / WET the Race Engineer makes no call.
 - **2022–2025 era only, and not every race.** 2026 cars and rules are different and deliberately excluded. The cache behind the Parquet holds 43 races on 13 circuits — 8 from 2022, 12 from 2023, 11 from 2024, 12 from 2025 — not the full calendars (e.g. no China, Canada, Spain, Hungary, Netherlands, Mexico, Brazil, Las Vegas, Qatar, USA).
 - **Overtake probabilities are slightly optimistic above 40 %** (calibration table above).
-- **Car confound (Module 3).** Driver style is extracted from telemetry partly shaped by the car; mitigated by driver-controlled inputs, not eliminated. The British GP qualifying sessions are not in the cache (401), so V3 uses 18 of the 20 planned sessions.
+- **Car confound (Module 3).** Driver style is extracted from telemetry partly shaped by the car; mitigated by driver-controlled inputs and within-session comparison, not eliminated. The British GP qualifying sessions are not in the cache (401), so V3 uses 18 of the 20 planned sessions.
 - **Telemetry Clash alignment.** Laps are aligned on each driver's own fraction of the lap, so the same grid point can be metres apart on track: a single corner's time gain carries ±40–200 ms (estimated from GPS in the notebook). The lap total and the trend are reliable; single corners are indicative.
 - **No `nGear` / `RPM` features** in Module 3 yet (too few samples; would likely overfit).
 - **Stand-in stream positions are schematic:** the Parquet has lap times, not GPS, so cars move at constant speed within a lap — drawn on the circuit's real GPS outline (12 of 13 circuits; British is not in the cache). Take control works only with the stand-in stream: f1-race-replay replays the real race.
@@ -200,8 +200,9 @@ Acknowledging limitations is a feature of the project, not a bug.
 - **Module 2 train/serve skew.** `GapAhead` was a lap-time difference in training and a real gap at inference; overtakes included pit stops; `scale_pos_weight` inflated probabilities the simulator consumes.
 - **Race Engineer dropped cars.** The live state was built at the leader's lap, so every car that had not crossed that line yet disappeared ("ALO is not running"). Now it is built at the followed driver's lap, with estimated line times for cars behind and lapped cars, and tested for future leakage.
 - **Two clocks.** f1-race-replay sends lap end times on the FastF1 session clock and the same moments on the replay clock; comparing the wrong pair would make every lap look either completed or not started.
-- **A leak in the stand-in stream.** The engineer trusted the frame's `rel_dist` near the line because it looked nearly perfect — on the stand-in stream, which builds `rel_dist` from each lap's real duration. On real f1-race-replay frames the same idea was 5× worse than ignoring it. Validate on the real distribution, not on your own simulator of it.
+- **A leak in the stand-in stream.** The engineer trusted the frame's `rel_dist` near the line because it looked nearly perfect — on the stand-in stream, which builds `rel_dist` from each lap's real duration. On real f1-race-replay frames, near the line, the same idea was 5× worse than ignoring it (1.18 s vs 0.23 s). Validate on the real distribution, not on your own simulator of it.
 - **Module 3 measured sensors, not drivers.** A dead throttle channel (RUS, Miami 2025: 0 % all lap) and a throttle signal that tops out at 98 % (NOR, Bahrain 2024 — "5 % full throttle" with a > 98 % threshold) moved drivers between clusters. Now a per-lap channel check and ≥ 95 %. Same lesson as V1's DRS channel, one level deeper.
+- **Found by the second independent review** (after this session's work): a free tyre change under Monaco 2024's lap-1 red flag was counted as a pit stop in the Race Simulator check (ρ there 0.80 → 0.956); Module 3 averaged raw features although drivers ran different circuits (now within-session z-scores); the undercut backtest was given the leader's *future* tyre choice (removed; no verdict changed) and its sample is conditional on a quick response (now said); the dashboard showed "1 lap later" for a team that boxed exactly when the engineer said.
 - **The dashboard looked for the FastF1 cache in the wrong folder** and went online for qualifying (401); it now finds `cache_drive/f1_cache` and runs FastF1 offline.
 - **Found by an independent review** (a separate AI code-review agent, with no access to how the code was written, run before release): after a red flag the "out of the race" rule dropped every car behind (it counted seconds; it now counts the field's laps); a car that pitted at the end of lap N rejoined ~20 s too far ahead (a stop's loss is ~4 s on the in-lap and ~19 s on the out-lap — the engine now charges the out-lap part); FastF1's generated placeholder rows after a retirement looked like completed laps; the stand-in stream reported a Safety Car from the start of its lap (now a lap late, never early); and the backtest was in-sample — now also run leave-one-race-out.
 

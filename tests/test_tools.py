@@ -201,3 +201,15 @@ def test_style_features_survive_a_98_percent_throttle_ceiling_and_dead_channels(
     assert shared.style_lap_ok(lap) == (True, "")
     assert not shared.style_lap_ok(lap.assign(Throttle=0.0))[0]           # RUS, Miami 2025 Q
     assert not shared.style_lap_ok(lap.assign(Throttle=np.nan))[0]
+
+
+def test_a_red_flag_tyre_change_is_not_a_stop():
+    """Monaco 2024: a free tyre change in the lap-1 red flag must not be charged as a pit stop."""
+    from tools.race_simulator import with_real_strategies
+    duel = _duel(a_pit=1, b_pit=11)
+    duel.loc[(duel.Driver == "AAA") & (duel.LapNumber == 1), "TrackStatus"] = "15"   # red flag on lap 1
+    q = pd.DataFrame({"Driver": ["BBB", "AAA"], "Team": ["Ferrari", "Ferrari"], "QualyTime": [90.0, 90.1],
+                      "QualyRank": [1, 2]})
+    g = with_real_strategies(grid_from_qualifying(q, 20), duel, 2099, "Bahrain Grand Prix").set_index("Driver")
+    assert (g.loc["AAA", "StartCompound"], g.loc["AAA", "StartAge"], g.loc["AAA", "Stop1Lap"]) == ("HARD", 1, 0)
+    assert (g.loc["BBB", "Stop1Lap"], g.loc["BBB", "Stop1Compound"]) == (11, "HARD")       # a green stop stays

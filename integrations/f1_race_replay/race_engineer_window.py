@@ -664,8 +664,18 @@ class RaceEngineerWindow(QMainWindow):
             self.take_button.setEnabled(False)
             text, colour = ("Take control needs the stand-in stream (replay_stream.py): f1-race-replay "
                             "replays the real race only."), DIM
+        elif not in_control and tc.get("too_late"):
+            self._take_control = False
+            self.take_button.setEnabled(False)
+            self.take_button.setText("TAKE CONTROL")
+            text, colour = "Too late to take control: the race is about to finish.", DIM
         elif not in_control:
+            log = tc.get("log") or []
+            if self._take_control and log and ("Too late" in log[-1] or "ignored" in log[-1]):
+                self._take_control = False                               # the stream said no: offer it again
             self.take_button.setEnabled(not self._take_control)          # once per race
+            if not self._take_control:
+                self.take_button.setText("TAKE CONTROL")
             lap = tc.get("would_take_over_at")
             text = ("Real race. TAKE CONTROL hands it to the race engine"
                     + (f" from the end of lap {lap}" if lap else "") + " — then you call the stops.")

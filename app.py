@@ -752,7 +752,10 @@ with tabs[6]:
                 if len(nxt):
                     pl = int(nxt.LapNumber.iloc[0])
                     after = r[r.LapNumber == pl + 1].Compound
-                    team = f"boxed at the end of lap {pl} ({pl - lap} lap{'s' if pl - lap != 1 else ''} later) " \
+                    late = pl - (int(lap) + 1)          # "Box now" at the end of lap n = in-lap n+1
+                    when = ("the same lap as \"Box now\"" if late == 0 else
+                            f"{late} lap{'s' if late != 1 else ''} after \"Box now\" would have")
+                    team = f"boxed at the end of lap {pl} ({when}) " \
                            f"onto {after.iloc[0].title() if len(after) else '?'}"
                 else:
                     team = "made no more stops"

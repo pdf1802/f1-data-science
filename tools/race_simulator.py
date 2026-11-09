@@ -80,23 +80,38 @@ def with_real_strategies(grid: pd.DataFrame, laps: pd.DataFrame, season: int, ra
     age, the first two stops: in-lap and the compound fitted). Used to check the engine against a
     real result: given the real strategies, does simulating the race beat the grid order?
     Drivers with no dry laps in the race keep the grid's default plan.
+
+    A tyre change under a RED FLAG is not a stop: it costs nothing (Monaco 2024: 15 cars changed
+    tyres in the lap-1 red flag). Counting it as one charged a full pit loss to most of the field
+    and shuffled a race where nobody can pass (independent review). A red-flag change before any
+    racing lap makes the new tyre the start tyre; a later one is dropped (the engine has no free
+    stop), which keeps the old compound until the next real stop.
     """
     r = laps[(laps["Season"] == season) & (laps["Race"] == race)].dropna(subset=["Stint"])
     g = grid.copy()
     for d, x in r.groupby("Driver"):
         if d not in set(g["Driver"]):
             continue
-        st = (x.sort_values("LapNumber").groupby("Stint")
+        x = x.sort_values("LapNumber")
+        st = (x.groupby("Stint")
                .agg(c=("Compound", "first"), a=("TyreLife", "first"), last=("LapNumber", "max")))
         if not set(st["c"]) <= {"SOFT", "MEDIUM", "HARD"}:
             continue
+        status = x.set_index("LapNumber")["TrackStatus"].astype(str)
+        comp, age, last = st["c"].tolist(), st["a"].tolist(), [int(v) for v in st["last"]]
+        start_c, start_a = comp[0], age[0]
+        stops = []                                                  # (in-lap, compound fitted)
+        for k in range(len(st) - 1):
+            red_flag = "5" in status.get(last[k], "")
+            if red_flag and not stops and last[k] <= 2:             # before any racing: new start tyre
+                start_c, start_a = comp[k + 1], age[k + 1]
+            elif not red_flag:                                      # a later red-flag change is dropped
+                stops.append((last[k], comp[k + 1]))
         i = g.index[g["Driver"] == d][0]
-        g.loc[i, ["StartCompound", "StartAge"]] = [st["c"].iloc[0], int(st["a"].iloc[0]) if pd.notna(st["a"].iloc[0]) else 1]
+        g.loc[i, ["StartCompound", "StartAge"]] = [start_c, int(start_a) if pd.notna(start_a) else 1]
         for k in (1, 2):
-            if len(st) > k:
-                g.loc[i, [f"Stop{k}Lap", f"Stop{k}Compound"]] = [int(st["last"].iloc[k - 1]), st["c"].iloc[k]]
-            else:
-                g.loc[i, [f"Stop{k}Lap", f"Stop{k}Compound"]] = [0, st["c"].iloc[-1]]
+            lap_k, comp_k = stops[k - 1] if len(stops) >= k else (0, (stops[-1][1] if stops else start_c))
+            g.loc[i, [f"Stop{k}Lap", f"Stop{k}Compound"]] = [lap_k, comp_k]
     return g
 
 

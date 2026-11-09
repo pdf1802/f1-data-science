@@ -215,6 +215,7 @@ def test_take_control_starts_the_engine_from_the_lap_the_leader_completed(laps, 
 def test_take_control_too_close_to_the_flag_is_refused(laps, feed):
     s = ReplaySession(laps, 2099, RACE)
     t = line(feed, "D00", 29) + 10                                 # leader on the last lap
+    assert s.payload(t)["take_control"]["too_late"] and s.payload(t)["take_control"]["would_take_over_at"] is None
     assert "Too late" in s.command({"cmd": "take_control"}, t) and not s.in_control
     assert rs.parse_terminal_command("take") == {"cmd": "take_control"}
 

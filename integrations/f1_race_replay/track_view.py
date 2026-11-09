@@ -52,6 +52,11 @@ class TrackMap(QWidget):
         geo = p.get("track_geometry")
         if geo and geo.get("x"):
             self._set_geometry(geo)
+        elif self.geometry_xy is None and p.get("position_source") == "lap-fraction":
+            # stand-in stream on a circuit with no GPS outline: it places cars on a circle — draw that circle
+            R = float(p.get("circuit_length_m") or 5000) / (2 * math.pi)
+            a = np.linspace(0, 2 * math.pi, 400, endpoint=False)
+            self._set_geometry({"x": (R * np.cos(a)).tolist(), "y": (R * np.sin(a)).tolist(), "rotation_deg": 0.0})
         now = time.monotonic()
         drivers = (p.get("frame") or {}).get("drivers") or {}
         new = {}

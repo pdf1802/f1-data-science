@@ -258,7 +258,8 @@ def backtest_attempts(attempts: pd.DataFrame) -> pd.DataFrame:
         a = DriverState(x.A, x.team_A, x.pos_A, x.comp_A, x.age_A)
         b = DriverState(x.B, x.team_B, x.pos_A - 1, x.comp_B, x.age_B)
         cfg = {"track_temp": x.track_temp, "air_temp": x.air_temp, "circuit": x.Race}
-        r = undercut_analysis(a, b, x.gap, x.lap, cfg, new_compound=x.new_A, leader_compound=x.new_B)
+        # leader_compound=None: B's tyre choice is made laps later — not known at the decision moment
+        r = undercut_analysis(a, b, x.gap, x.lap, cfg, new_compound=x.new_A, leader_compound=None)
         scen = "Leader reacts next lap" if x.reaction == 1 else (
             "Leader reacts in 3 laps" if x.reaction == 3 else None)
         rows.append({**x._asdict(), "verdict": r["verdict"], "min_gap_pred": r["min_gap"],

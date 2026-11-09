@@ -37,8 +37,14 @@ NEEDED = ("car_data.ff1pkl", "position_data.ff1pkl", "timing_app_data.ff1pkl", "
 
 
 def default_cache() -> Path:
+    """$F1_CACHE_DIR, else cache_drive/f1_cache, else cache/ — the same order as tools/shared.py."""
     env = os.environ.get("F1_CACHE_DIR")
-    return Path(env) if env else REPO_ROOT / "cache_drive" / "f1_cache"
+    if env:
+        return Path(env)
+    for p in (REPO_ROOT / "cache_drive" / "f1_cache", REPO_ROOT / "cache"):
+        if p.is_dir():
+            return p
+    return REPO_ROOT / "cache"
 
 
 def default_replay_dir() -> Path:
