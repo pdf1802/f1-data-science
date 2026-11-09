@@ -35,7 +35,20 @@ warnings.filterwarnings("ignore")
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 _LOCAL_MODEL_DIR = os.path.join(REPO_ROOT, "models")
 _COLAB_MODEL_DIR = "/content/drive/MyDrive/f1_models"
-DEFAULT_CACHE_DIR = os.environ.get("F1_CACHE_DIR", os.path.join(REPO_ROOT, "cache"))
+
+
+def _default_cache_dir() -> str:
+    """$F1_CACHE_DIR, else the first FastF1 cache found in the repo (cache_drive/f1_cache, cache)."""
+    env = os.environ.get("F1_CACHE_DIR")
+    if env:
+        return env
+    for path in (os.path.join(REPO_ROOT, "cache_drive", "f1_cache"), os.path.join(REPO_ROOT, "cache")):
+        if os.path.isdir(path):
+            return path
+    return os.path.join(REPO_ROOT, "cache")
+
+
+DEFAULT_CACHE_DIR = _default_cache_dir()
 
 REQUIRED_MODEL_FILES = ("lap_time_model.pkl", "overtaking_model.pkl", "team_encoder.pkl")
 
@@ -62,12 +75,22 @@ def models_available() -> bool:
         return False
 
 
-def enable_fastf1_cache(cache_dir: str = DEFAULT_CACHE_DIR) -> str:
-    """Enable the FastF1 on-disk cache (idempotent). Returns the path used."""
+def enable_fastf1_cache(cache_dir: str | None = None, offline: bool | None = None) -> str:
+    """
+    Enable the FastF1 on-disk cache (idempotent). Returns the path used.
+
+    offline: serve sessions only from the cache. F1's live-timing archive answers 401 to
+    unauthenticated downloads since Oct 2026 (FastF1 #978), so going online only adds failed
+    requests and timeouts. Default on; set F1_FASTF1_ONLINE=1 to let FastF1 download again.
+    """
     import fastf1
 
+    cache_dir = cache_dir or DEFAULT_CACHE_DIR
     os.makedirs(cache_dir, exist_ok=True)
     fastf1.Cache.enable_cache(cache_dir)
+    if offline is None:
+        offline = os.environ.get("F1_FASTF1_ONLINE", "") != "1"
+    fastf1.Cache.offline_mode(bool(offline))
     return cache_dir
 
 

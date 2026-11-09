@@ -5,6 +5,7 @@ models/*.joblib
 *.joblib
 
 # FastF1 cache — can be gigabytes
+cache_drive/
 f1_cache/
 **/f1_cache/
 fastf1_cache/
