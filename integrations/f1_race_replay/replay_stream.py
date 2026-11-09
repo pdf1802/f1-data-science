@@ -24,13 +24,17 @@ Not in the real payload:
 Positions are SCHEMATIC: cars move round a circle at constant speed within each
 lap (x, y, rel_dist), because the Parquet has lap times, not GPS.
 
-Take control (--take-control N): real laps up to lap N, then the lap-by-lap
-engine (tools/race_engine.py) races on from the real state at the end of lap N.
-Clients can send commands back on the same socket, one JSON object per line:
+Take control: the stream always replays the real race. At any moment a client
+(the Race Engineer window's TAKE CONTROL button) can hand the race to the
+lap-by-lap engine (tools/race_engine.py): it races on from the real state at the
+end of the lap the leader has just completed. `--take-control N` does the same
+automatically at lap N. Clients send commands on the same socket, one JSON object
+per line:
+    {"cmd": "take_control"}                                 the engine drives from now on
     {"cmd": "box", "driver": "VER", "compound": "HARD"}   pit this lap (next lap if
                                                             past 85 % of the lap)
     {"cmd": "stay_out", "driver": "VER"}                    cancel the planned stops
-or type them on the terminal: `box VER HARD`, `stay VER`.
+or type them on the terminal: `take`, `box VER HARD`, `stay VER`.
 """
 
 from __future__ import annotations
@@ -374,7 +378,8 @@ class TakeControlFeed(RaceFeed):
     def payload(self, t: float) -> dict:
         self._run_until(t)
         out = super().payload(t)
-        out["take_control"] = {"from_lap": self.N, "active": t >= self.T0, "engine_lap": self.live.lap,
+        out["take_control"] = {"available": True, "from_lap": self.N, "active": t >= self.T0,
+                               "engine_lap": self.live.lap,
                                "drivers": self.live.setup["drivers"], "commanded": sorted(self.commanded),
                                "plans": {d: self.live.plan(d) for d in self.live.setup["drivers"]},
                                "log": self.log[-12:]}
@@ -387,6 +392,74 @@ class TakeControlFeed(RaceFeed):
 
     def _status_known(self, lap: int, upto: int) -> bool:
         return lap <= upto                                        # simulated laps: only once run
+
+
+class ReplaySession:
+    """
+    What the stand-in stream serves: the real race, which a client can hand to the
+    engine at any moment ({"cmd": "take_control"}, the window's TAKE CONTROL button).
+
+    The take-over lap N is the last lap the LEADER has completed at that moment: the
+    engine starts from the real state at the end of lap N (every car's real line time
+    for lap N, real tyres and stops) — so the leader is already on a simulated lap,
+    and cars still on lap N finish it for real first. `take_control_at=N` (the
+    --take-control flag) builds that feed from the start: real race to lap N, then
+    the engine.
+    """
+
+    def __init__(self, laps: pd.DataFrame, season: int, race: str, seed: int = 0,
+                 take_control_at: int | None = None):
+        self.laps, self.season, self.race, self.seed = laps, int(season), race, seed
+        self.feed: RaceFeed = (TakeControlFeed(laps, season, race, take_control_at, seed=seed)
+                               if take_control_at else RaceFeed(laps, season, race))
+        self.log: list[str] = []
+
+    @property
+    def in_control(self) -> bool:
+        return isinstance(self.feed, TakeControlFeed)
+
+    def take_over_lap(self, t: float) -> int:
+        """Last lap the leader has completed at replay time t, clamped to what the engine accepts."""
+        done = max((self.feed._progress(d, t)["done"] for d in self.feed.tl), default=0)
+        return int(min(max(done, 1), self.feed.total_laps - 2))
+
+    def take_control(self, t: float, by: str | None = None) -> str:
+        if self.in_control:
+            return self._say(f"Already in take-control mode (engine after lap {self.feed.N})")
+        n = self.take_over_lap(t)
+        done = max((self.feed._progress(d, t)["done"] for d in self.feed.tl), default=0)
+        if done >= self.feed.total_laps - 1:
+            return self._say("Too late to take control: the race is about to finish")
+        self.feed = TakeControlFeed(self.laps, self.season, self.race, n, seed=self.seed)
+        self.feed.log = self.log + [f"TAKE CONTROL at lap {n}" + (f" (from {by}'s pit wall)" if by else "")
+                                    + ": the engine races on from the real state, rivals on default plans,"
+                                    " no DNFs"]
+        return self.feed.log[-1]
+
+    def command(self, cmd: dict, t: float) -> str:
+        """Apply a client command at replay time t; returns a log line."""
+        if not isinstance(cmd, dict):
+            return self._say("ignored: not a command")
+        if cmd.get("cmd") == "take_control":
+            return self.take_control(t, by=(str(cmd.get("driver") or "").upper() or None))
+        if not self.in_control:
+            return self._say(f"{cmd.get('cmd')!r} ignored: press TAKE CONTROL first (this is the real race)")
+        return self.feed.command(cmd, t)
+
+    def payload(self, t: float) -> dict:
+        out = self.feed.payload(t)
+        if not self.in_control:
+            out["take_control"] = {"available": True, "active": False, "from_lap": None,
+                                   "would_take_over_at": self.take_over_lap(t), "log": self.log[-12:]}
+        return out
+
+    @property
+    def t_end(self) -> float:
+        return self.feed.t_end
+
+    def _say(self, msg: str) -> str:
+        (self.feed.log if self.in_control else self.log).append(msg)
+        return msg
 
 
 # ── TCP server: same protocol as f1-race-replay, plus commands from clients ──
@@ -458,8 +531,10 @@ def parse_race(text: str) -> tuple[int, str]:
 
 
 def parse_terminal_command(line: str) -> dict | None:
-    """'box VER HARD' / 'stay VER' → command dict."""
+    """'take' / 'box VER HARD' / 'stay VER' → command dict."""
     parts = line.strip().split()
+    if parts and parts[0].lower() in ("take", "take_control", "takecontrol"):
+        return {"cmd": "take_control"}
     if len(parts) >= 2 and parts[0].lower() == "box":
         return {"cmd": "box", "driver": parts[1], "compound": parts[2] if len(parts) > 2 else "HARD"}
     if len(parts) >= 2 and parts[0].lower() in ("stay", "stay_out"):
@@ -474,37 +549,36 @@ def main(argv=None):
     ap.add_argument("--speed", type=float, default=30.0, help="race seconds per real second")
     ap.add_argument("--start-lap", type=int, default=1, help="start streaming from this lap")
     ap.add_argument("--take-control", type=int, default=None, metavar="N",
-                    help="real race to lap N, then the engine races on and accepts box commands")
+                    help="hand the race to the engine automatically after lap N (otherwise: when a "
+                         "client sends take_control — the window's TAKE CONTROL button — or you type 'take')")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--port", type=int, default=PORT)
     ap.add_argument("--hz", type=float, default=4.0, help="payloads per real second")
     args = ap.parse_args(argv)
     season, race = parse_race(args.race)
     laps = pd.read_parquet(args.laps)
-    feed = (TakeControlFeed(laps, season, race, args.take_control, seed=args.seed)
-            if args.take_control else RaceFeed(laps, season, race))
+    session = ReplaySession(laps, season, race, seed=args.seed, take_control_at=args.take_control)
+    feed = session.feed
     server = StreamServer(args.port)
     t = 0.0
     if args.start_lap > 1:
         lines = [tl["line"][tl["lap"].index(args.start_lap - 1)] for tl in feed.tl.values()
                  if args.start_lap - 1 in tl["lap"]]
         t = float(min(lines)) if lines else 0.0
-    mode = f", engine takes over after lap {args.take_control}" if args.take_control else ""
+    mode = (f", engine takes over after lap {args.take_control}" if args.take_control
+            else " — TAKE CONTROL from the window (or type 'take') to race on with the engine")
     print(f"Streaming {season} {race} ({feed.total_laps} laps) on localhost:{server.port} "
           f"at {args.speed:g}×{mode} — Ctrl+C to stop")
-    if args.take_control:
-        print("Commands: 'box VER HARD', 'stay VER' (or send JSON from a client)")
-        threading.Thread(target=lambda: [server.commands.put(c) for c in
-                                         map(parse_terminal_command, sys.stdin) if c],
-                         daemon=True).start()
+    print("Commands: 'take', 'box VER HARD', 'stay VER' (or JSON from a client)")
+    threading.Thread(target=lambda: [server.commands.put(c) for c in
+                                     map(parse_terminal_command, sys.stdin) if c],
+                     daemon=True).start()
     dt = 1.0 / args.hz
     try:
-        while t <= feed.t_end + 5:
+        while t <= session.t_end + 5:
             while not server.commands.empty():
-                cmd = server.commands.get()
-                if isinstance(feed, TakeControlFeed) and isinstance(cmd, dict):
-                    print(feed.command(cmd, t))
-            server.broadcast(feed.payload(t))
+                print(session.command(server.commands.get(), t))
+            server.broadcast(session.payload(t))
             time.sleep(dt)
             t += dt * args.speed
     except KeyboardInterrupt:

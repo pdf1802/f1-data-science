@@ -16,7 +16,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from integrations.f1_race_replay.race_engineer_window import RaceEngineerWindow, guess_circuit  # noqa: E402
-from integrations.f1_race_replay.replay_stream import RaceFeed, StreamServer, TakeControlFeed  # noqa: E402
+from integrations.f1_race_replay.replay_stream import RaceFeed, ReplaySession, StreamServer, TakeControlFeed  # noqa: E402
 
 from race_factory import RACE, line, make_race  # noqa: E402
 
@@ -70,9 +70,49 @@ def test_take_control_buttons_send_commands(app):
     w = RaceEngineerWindow(port=server.port, driver="D03", n_sims=10)
     try:
         w.show()
-        pump(app, server, feed, feed.T0 + 30, lambda: w.tc_panel.isVisible() and w.tc_buttons[2].isEnabled())
+        pump(app, server, feed, feed.T0 + 30, lambda: w.tc_buttons[2].isEnabled())
+        assert not w.take_button.isEnabled() and "IN CONTROL" in w.take_button.text()
         w.tc_buttons[2].click()                                   # BOX → HARD
         assert server.commands.get(timeout=3) == {"cmd": "box", "driver": "D03", "compound": "HARD"}
+    finally:
+        w.close()
+        server.close()
+
+
+def test_take_control_button_hands_the_race_to_the_engine(app):
+    """Real race first; the button sends take_control, the stream switches, BOX buttons come alive."""
+    session = ReplaySession(make_race(20), 2099, RACE, seed=1)
+    server = StreamServer(port=0)
+    w = RaceEngineerWindow(port=server.port, driver="D03", n_sims=10)
+
+    class Relay:                                                   # what replay_stream.main() does
+        def payload(self, t):
+            while not server.commands.empty():
+                session.command(server.commands.get(), t)
+            return session.payload(t)
+    try:
+        w.show()
+        t = pump(app, server, Relay(), line(session.feed, "D00", 5) + 10, lambda: w.take_button.isEnabled())
+        assert not any(b.isEnabled() for b in w.tc_buttons)       # real race: no BOX
+        assert "Real race" in w.tc_state.text()
+        w.take_button.click()
+        pump(app, server, Relay(), t, lambda: w.tc_buttons[0].isEnabled())
+        assert session.in_control and session.feed.N >= 5
+        assert "IN CONTROL" in w.tc_state.text() and not w.take_button.isEnabled()
+    finally:
+        w.close()
+        server.close()
+
+
+def test_take_control_is_off_with_the_real_f1_race_replay(app):
+    """f1-race-replay's payload has no take_control: the button stays off and says why."""
+    feed = RaceFeed(make_race(20), 2099, RACE)
+    server = StreamServer(port=0)
+    w = RaceEngineerWindow(port=server.port, driver="D03", n_sims=10)
+    try:
+        w.show()
+        pump(app, server, feed, line(feed, "D00", 3), lambda: "stand-in stream" in w.tc_state.text())
+        assert not w.take_button.isEnabled() and not any(b.isEnabled() for b in w.tc_buttons)
     finally:
         w.close()
         server.close()

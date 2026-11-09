@@ -12,7 +12,9 @@ crosses the line, shows the strategy call of tools/race_engineer.py:
     options         P(win / podium / points), expected position, gain vs staying out ± 95 % CI
     timing tower    the race at the end of that lap (~ = line time estimated: not crossed yet)
     undercut alert  when the car ahead is within 3 s
-    take control    box / stay-out buttons when the stream runs in take-control mode
+    take control    TAKE CONTROL button: from that lap the race engine drives the race
+                    and the BOX / STAY OUT buttons decide your driver's stops
+                    (stand-in stream only: f1-race-replay replays the real race)
 
 Threads: the socket is read by StreamClient (a QThread, same protocol as
 f1-race-replay's TelemetryStreamClient); the Monte Carlo runs in EngineerWorker
@@ -65,6 +67,9 @@ QHeaderView::section {{ background: {PANEL}; color: {DIM}; border: none; border-
 QPushButton {{ background: {PANEL_2}; border: 1px solid {LINE}; border-radius: 6px; padding: 8px 12px; font-weight: 700; }}
 QPushButton:hover {{ border-color: {DIM}; }}
 QPushButton:disabled {{ color: #555; }}
+QPushButton#take {{ background: {ACCENT}; border: 1px solid {ACCENT}; color: white; letter-spacing: 1px; padding: 8px 18px; }}
+QPushButton#take:hover {{ background: #ff2a24; }}
+QPushButton#take:disabled {{ background: {PANEL_2}; border: 1px solid {LINE}; color: {WARN}; }}
 QListWidget {{ background: {PANEL}; border: none; font-family: {MONO}; font-size: 11px; color: {DIM}; }}
 QStatusBar {{ color: {DIM}; }}
 """
@@ -416,7 +421,22 @@ class RaceEngineerWindow(QMainWindow):
         grid.addWidget(opt_panel, 0, 0)
         grid.addWidget(panel(self.tower, self.live, caption="TIMING AT THE END OF THE LAP  (~ estimated)"), 0, 1, 2, 1)
 
-        # take control
+        # take control: the race is always the real one until you press the button
+        self.take_button = QPushButton("TAKE CONTROL")
+        self.take_button.setObjectName("take")
+        self.take_button.setToolTip("Hand the race to the engine from the lap the leader has just completed;\n"
+                                    "from then on the BOX buttons decide your driver's stops.")
+        self.take_button.clicked.connect(self._on_take_button)
+        self.take_button.setEnabled(False)
+        self.tc_state = QLabel("Waiting for the stream…")
+        self.tc_state.setObjectName("sub")
+        self.tc_state.setWordWrap(True)
+        head_row = QWidget()
+        head_row.setObjectName("bare")
+        hrl = QHBoxLayout(head_row)
+        hrl.setContentsMargins(0, 0, 0, 0)
+        hrl.addWidget(self.tc_state, 1)
+        hrl.addWidget(self.take_button)
         self.tc_buttons = []
         tc = QWidget()
         tc.setObjectName("bare")
@@ -433,12 +453,11 @@ class RaceEngineerWindow(QMainWindow):
         stay.clicked.connect(self._on_stay_button)
         tcl.addWidget(stay)
         self.tc_buttons.append(stay)
+        for b in self.tc_buttons:
+            b.setEnabled(False)
         self.tc_log = QListWidget()
-        self.tc_log.setMaximumHeight(110)
-        self.tc_state = QLabel("")
-        self.tc_state.setObjectName("sub")
-        self.tc_panel = panel(self.tc_state, tc, self.tc_log, caption="TAKE CONTROL")
-        self.tc_panel.setVisible(False)
+        self.tc_log.setMaximumHeight(96)
+        self.tc_panel = panel(head_row, tc, self.tc_log, caption="TAKE CONTROL")
         grid.addWidget(self.tc_panel, 1, 0)
         grid.setColumnStretch(0, 6)
         grid.setColumnStretch(1, 5)
@@ -603,23 +622,53 @@ class RaceEngineerWindow(QMainWindow):
             self.live.setText(f"Now: lap {sd.get('lap', '?')}/{sd.get('total_laps', '?')} (leader {sd.get('leader', '?')})"
                               f"  ·  {self.driver} P{fd.get('position', '?')} on lap {fd.get('lap', '?')},"
                               f" {tyre.title()} (lap {int(fd.get('tyre_life') or 0)} on the set){pit}")
-        tc = p.get("take_control")
-        if tc and not self._take_control:
+        self._refresh_take_control(p.get("take_control"))
+
+    def _refresh_take_control(self, tc: dict | None):
+        """
+        Four states: no take-control in this stream (f1-race-replay replays the real race only);
+        real race, button ready; engine takes over at the end of a lap still to come; engine in
+        control — BOX buttons live for the followed driver.
+        """
+        in_control = bool(tc) and tc.get("from_lap") is not None
+        active = in_control and bool(tc.get("active"))
+        if not tc or not tc.get("available", True):
+            self.take_button.setEnabled(False)
+            text, colour = ("Take control needs the stand-in stream (replay_stream.py): f1-race-replay "
+                            "replays the real race only."), DIM
+        elif not in_control:
+            self.take_button.setEnabled(not self._take_control)          # once per race
+            lap = tc.get("would_take_over_at")
+            text = ("Real race. TAKE CONTROL hands it to the race engine"
+                    + (f" from the end of lap {lap}" if lap else "") + " — then you call the stops.")
+            colour = DIM
+        elif not active:
             self._take_control = True
-            self.tc_panel.setVisible(True)
-        if tc:
-            active = bool(tc.get("active"))
-            for b in self.tc_buttons:
-                b.setEnabled(active and self.driver in (tc.get("drivers") or []))
-            self.tc_state.setText(
-                f"The race engine is in control since lap {tc['from_lap']} — box {self.driver} whenever you want"
-                if active else f"Real race until lap {tc['from_lap']}, then the engine takes over")
-            self.tc_state.setStyleSheet(f"color: {WARN if active else DIM}; font-weight: 600;")
-            log = tc.get("log") or []
-            if self.tc_log.count() != len(log) or (log and self.tc_log.item(self.tc_log.count() - 1).text() != log[-1]):
-                self.tc_log.clear()
-                self.tc_log.addItems(log)
-                self.tc_log.scrollToBottom()
+            self.take_button.setEnabled(False)
+            text, colour = f"Real race until lap {tc['from_lap']}, then the engine takes over", WARN
+        else:
+            self._take_control = True
+            self.take_button.setEnabled(False)
+            text, colour = (f"IN CONTROL since lap {tc['from_lap']} — box {self.driver} whenever you want"), WARN
+        if in_control:
+            self.take_button.setText(f"IN CONTROL · L{tc['from_lap']}")
+        for b in self.tc_buttons:
+            b.setEnabled(active and self.driver in (tc.get("drivers") or []))
+        self.tc_state.setText(text)
+        self.tc_state.setStyleSheet(f"color: {colour}; font-weight: 600;")
+        log = (tc or {}).get("log") or []
+        if self.tc_log.count() != len(log) or (log and self.tc_log.item(self.tc_log.count() - 1).text() != log[-1]):
+            self.tc_log.clear()
+            self.tc_log.addItems(log)
+            self.tc_log.scrollToBottom()
+
+    def _on_take_button(self):
+        if self.client.send({"cmd": "take_control", "driver": self.driver}):
+            self._take_control = True                                # wait for the stream to confirm
+            self.take_button.setEnabled(False)
+            self.take_button.setText("TAKING CONTROL…")
+        else:
+            self.statusBar().showMessage("Not connected — command not sent", 4000)
 
     def _on_box_button(self):
         self._command("box", self.sender().property("compound"))

@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 from integrations.f1_race_replay import replay_stream as rs
-from integrations.f1_race_replay.replay_stream import RaceFeed, StreamServer, TakeControlFeed
+from integrations.f1_race_replay.replay_stream import RaceFeed, ReplaySession, StreamServer, TakeControlFeed
 from tools.race_engineer import RaceEngineer
 
 from race_factory import RACE, line, make_race, stream
@@ -178,6 +178,55 @@ def test_take_control_runs_to_the_flag(laps):
     assert np.isfinite(tc.t_end)
     drv = p["frame"]["drivers"]
     assert all(d["lap"] == 30 for d in drv.values())                # everyone took the flag (no DNFs)
+
+
+# ── take control at any moment (the window's TAKE CONTROL button) ───────────
+def test_the_session_is_the_real_race_until_someone_takes_control(laps, feed):
+    s = ReplaySession(laps, 2099, RACE, seed=1)
+    t = line(feed, "D00", 9) + 40                                  # leader 40 s into lap 10
+    p = s.payload(t)
+    assert p["frame"] == feed.payload(t)["frame"]
+    tc = p["take_control"]
+    assert tc["available"] and not tc["active"] and tc["from_lap"] is None and tc["would_take_over_at"] == 9
+    assert "TAKE CONTROL first" in s.command({"cmd": "box", "driver": "D03", "compound": "HARD"}, t)
+    assert not s.in_control
+
+
+def test_take_control_starts_the_engine_from_the_lap_the_leader_completed(laps, feed):
+    s = ReplaySession(laps, 2099, RACE, seed=1)
+    t = line(feed, "D00", 9) + 40
+    before = s.payload(t)
+    msg = s.command({"cmd": "take_control", "driver": "D05"}, t)
+    assert "TAKE CONTROL at lap 9" in msg and "D05" in msg and s.in_control
+    after = s.payload(t)
+    assert after["take_control"]["active"] and after["take_control"]["from_lap"] == 9
+    # the past does not change: every lap completed before t is the real one
+    for d, entries in before["lap_times"].items():
+        real = [(e["lap"], e["replay_line_time_s"]) for e in entries if e["replay_line_time_s"] <= t]
+        now = [(e["lap"], e["replay_line_time_s"]) for e in after["lap_times"][d] if e["replay_line_time_s"] <= t]
+        assert now == real
+    # the leader is on a simulated lap; box commands work now
+    assert "BOX lap" in s.command({"cmd": "box", "driver": "D03", "compound": "HARD"}, t)
+    assert "Already" in s.command({"cmd": "take_control"}, t + 5)
+    later = s.payload(t + 300)
+    assert any(e["source"] == "simulated" for e in later["lap_times"]["D00"])
+
+
+def test_take_control_too_close_to_the_flag_is_refused(laps, feed):
+    s = ReplaySession(laps, 2099, RACE)
+    t = line(feed, "D00", 29) + 10                                 # leader on the last lap
+    assert "Too late" in s.command({"cmd": "take_control"}, t) and not s.in_control
+    assert rs.parse_terminal_command("take") == {"cmd": "take_control"}
+
+
+def test_take_control_flag_is_the_same_race_as_the_button(laps):
+    """--take-control N and pressing the button when the leader has completed lap N give the same race."""
+    a = ReplaySession(laps, 2099, RACE, seed=7, take_control_at=N)
+    b = ReplaySession(laps, 2099, RACE, seed=7)
+    t = b.feed.tl["D00"]["line"][b.feed.tl["D00"]["lap"].index(N)] + 1
+    b.command({"cmd": "take_control"}, t)
+    end = t + 1500
+    assert a.payload(end)["lap_times"] == b.payload(end)["lap_times"]
 
 
 # ── the socket ───────────────────────────────────────────────────────────────
