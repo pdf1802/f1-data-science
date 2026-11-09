@@ -12,6 +12,7 @@ crosses the line, shows the strategy call of tools/race_engineer.py:
     options         P(win / podium / points), expected position, gain vs staying out ± 95 % CI
     timing tower    the race at the end of that lap (~ = line time estimated: not crossed yet)
     undercut alert  when the car ahead is within 3 s
+    track map       TRACK MAP button: the race drawn on the circuit (track_view.py)
     take control    TAKE CONTROL button: from that lap the race engine drives the race
                     and the BOX / STAY OUT buttons decide your driver's stops
                     (stand-in stream only: f1-race-replay replays the real race)
@@ -314,6 +315,8 @@ class RaceEngineerWindow(QMainWindow):
         self.messages = 0
         self._circuit_used: str | None = None
         self._take_control = False
+        self.track_window: QMainWindow | None = None
+        self.track_map = None
 
         self._build_ui(n_sims)
         self.client = StreamClient(host, port)
@@ -367,10 +370,15 @@ class RaceEngineerWindow(QMainWindow):
         self.sims.setValue(n_sims)
         self.sims.setSuffix(" sims")
         self.sims.editingFinished.connect(self._reconfigure)
+        self.track_button = QPushButton("TRACK MAP")
+        self.track_button.setToolTip("Open the race drawn on the circuit (same stream)")
+        self.track_button.clicked.connect(self.open_track_map)
         top.addWidget(title)
         top.addSpacing(12)
         top.addWidget(self.mode)
         top.addStretch(1)
+        top.addWidget(self.track_button)
+        top.addSpacing(8)
         for lab, w in (("DRIVER", self.driver_box), ("CIRCUIT", self.circuit_box), ("PRECISION", self.sims)):
             c = QLabel(lab)
             c.setObjectName("caption")
@@ -492,6 +500,22 @@ class RaceEngineerWindow(QMainWindow):
         if first:
             self._first_payload(payload)
         self.worker.submit(payload)
+        if self.track_map is not None:
+            self.track_map.set_payload(payload)
+
+    def open_track_map(self):
+        """A second window drawing the race on the circuit, fed by this window's stream (no new socket)."""
+        from integrations.f1_race_replay.track_view import TrackMap
+        if self.track_window is None:
+            self.track_window = QMainWindow(self)
+            self.track_window.setWindowTitle("F1 Race Replay — Track view")
+            self.track_window.resize(900, 640)
+            self.track_map = TrackMap(self.driver)
+            self.track_window.setCentralWidget(self.track_map)
+            if self.payload:
+                self.track_map.set_payload(self.payload)
+        self.track_window.show()
+        self.track_window.raise_()
 
     def _first_payload(self, payload: dict):
         drivers = (payload.get("frame") or {}).get("drivers") or {}
@@ -510,6 +534,8 @@ class RaceEngineerWindow(QMainWindow):
     def _driver_changed(self, d: str):
         if d and d != self.driver:
             self.driver = d
+            if self.track_map is not None:
+                self.track_map.driver = d
             self._reconfigure()
 
     def _reconfigure(self):
@@ -685,6 +711,8 @@ class RaceEngineerWindow(QMainWindow):
 
     # ── shutdown ─────────────────────────────────────────────────────────────
     def closeEvent(self, event):
+        if self.track_map is not None:
+            self.track_map.timer.stop()
         self.refresh.stop()
         self.client.stop()
         self.worker.stop()
@@ -698,11 +726,14 @@ def main(argv=None):
     ap.add_argument("--host", default="localhost")
     ap.add_argument("--port", type=int, default=PORT)
     ap.add_argument("--sims", type=int, default=300, help="Monte Carlo races per option")
+    ap.add_argument("--track", action="store_true", help="open the track map window too")
     args = ap.parse_args(argv)
     app = QApplication.instance() or QApplication(sys.argv[:1])
     w = RaceEngineerWindow(args.host, args.port, args.driver, args.circuit, args.sims)
     app.aboutToQuit.connect(w.close)                 # stop the threads however the app ends
     w.show()
+    if args.track:
+        w.open_track_map()
     return app.exec()
 
 

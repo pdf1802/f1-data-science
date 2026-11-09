@@ -77,6 +77,34 @@ def cached_what_if(base: pd.DataFrame, new: pd.DataFrame, focus: str, config: di
     return r
 
 
+LAPS_PATH = os.environ.get("F1_LAPS", os.path.join(shared.REPO_ROOT, "data", "laps_2022_2025.parquet"))
+
+
+@st.cache_data(show_spinner="Loading the lap data…")
+def cached_laps() -> pd.DataFrame | None:
+    if not os.path.exists(LAPS_PATH):
+        return None
+    from tools.training import dry_races
+    return dry_races(pd.read_parquet(LAPS_PATH))[0]
+
+
+@st.cache_resource(show_spinner=False, max_entries=8)
+def cached_feed(season: int, race: str):
+    """The stand-in stream of a real race (same payloads the Race Engineer window receives)."""
+    from integrations.f1_race_replay.replay_stream import RaceFeed
+    return RaceFeed(cached_laps(), season, race)
+
+
+@st.cache_data(show_spinner="Asking the engineer…", max_entries=256)
+def cached_engineer_call(season: int, race: str, driver: str, lap: int, n_sims: int):
+    """The Race Engineer's call when `driver` crosses the line at the end of `lap` — no future data."""
+    from tools.race_engineer import RaceEngineer
+    feed = cached_feed(season, race)
+    tl = feed.tl[driver]
+    t = tl["line"][tl["lap"].index(lap)] + 0.2
+    return RaceEngineer(driver, race, n_sims=n_sims).update(feed.payload(t))
+
+
 @st.cache_resource(show_spinner=False)
 def model_info() -> dict:
     """Which model generation is loaded + the physics gate from tools/training.py."""
@@ -140,7 +168,7 @@ def show(fig):
     st.plotly_chart(fig, width="stretch", theme="streamlit")
 
 
-def event_picker(key: str, default_gp: str = "British Grand Prix", default_year: int = 2024):
+def event_picker(key: str, default_gp: str = "Bahrain Grand Prix", default_year: int = 2024):
     c1, c2 = st.columns([1, 3])
     year = c1.selectbox("Season", YEARS, index=YEARS.index(default_year), key=f"{key}_y")
     gp = c2.text_input("Grand Prix (FastF1 event name or country)", default_gp, key=f"{key}_gp",
@@ -172,16 +200,17 @@ with st.sidebar:
         st.error("Models not found — model-based tabs are disabled.", icon="⚠️")
     st.markdown(
         "**Models**\n"
-        "- *Module 1* — LapDelta regressor (tyre, fuel, team, weather)\n"
-        "- *Module 2* — overtake classifier (gap, tyre offset, compounds)\n\n"
+        "- *Module 1* — LapDelta regressor (compound, tyre age, circuit; fuel-corrected)\n"
+        "- *Module 2* — overtake classifier (real gap, tyres, lap, position, circuit)\n\n"
         "**Known limitations** are listed in the README — read them before "
         "trusting a number.")
-    st.caption("Data: FastF1 (F1 live timing). Not affiliated with Formula 1.")
+    st.caption("Data: FastF1, offline from your cache (F1 live timing answers 401 to downloads since "
+               "Oct 2026) + the lap Parquet. Not affiliated with Formula 1.")
 
 st.title("F1 Pit Wall")
 
 tabs = st.tabs(["🏁 Race Simulator", "🔀 What-If", "⏱️ Undercut", "🛞 Stint Optimizer",
-                "📊 Qualy → Race", "📡 Telemetry Clash"])
+                "📊 Qualy → Race", "📡 Telemetry Clash", "🎧 Race Engineer"])
 
 
 # ═════════════════════════════ 1. RACE SIMULATOR ════════════════════════════
@@ -664,3 +693,103 @@ with tabs[5]:
                 who = b if best_c["Time gain (ms)"] > 0 else a
                 st.caption(f"Biggest single swing: **{best_c['Corner']}** — {who} gains "
                            f"{abs(best_c['Time gain (ms)']):.0f} ms.")
+
+
+# ═════════════════════════════ 7. RACE ENGINEER ═════════════════════════════
+with tabs[6]:
+    st.subheader("Race Engineer — the pit-wall call at any lap of a real race")
+    st.caption("Pick a race, a driver and a lap: the engineer sees only what had happened when that driver "
+               "crossed the line (the same feed the live window gets), races every option to the flag on the "
+               "same random draws, and makes the call. Then compare it with what the team really did.")
+    laps_df = cached_laps()
+    if not models_ready():
+        need_models()
+    elif laps_df is None:
+        st.warning(f"Needs the lap Parquet (`{os.path.relpath(LAPS_PATH, shared.REPO_ROOT)}`) — "
+                   "`python -m tools.export_cache`.", icon="🧰")
+    else:
+        from tools.race_engineer import MIN_CALL_LAP
+        from tools.race_engine import actual_result
+        races = sorted({(int(a), b) for a, b in laps_df[["Season", "Race"]].drop_duplicates().itertuples(index=False)},
+                       reverse=True)
+        labels = [f"{a} {b}" for a, b in races]
+        c = st.columns([2, 1, 3, 1])
+        choice = c[0].selectbox("Race", labels, labels.index("2023 Bahrain Grand Prix")
+                                if "2023 Bahrain Grand Prix" in labels else 0, key="re_race")
+        season, race = races[labels.index(choice)]
+        feed = cached_feed(season, race)
+        res = actual_result(laps_df, season, race)
+        drivers = list(res.index) + sorted(set(feed.tl) - set(res.index))
+        driver = c[1].selectbox("Driver", drivers, drivers.index("ALO") if "ALO" in drivers else 0, key="re_drv")
+        done = [l for l in feed.tl[driver]["lap"] if MIN_CALL_LAP <= l <= feed.total_laps - 2]
+        if not done:
+            st.info(f"{driver} did not complete enough laps for a call.")
+        else:
+            lap = c[2].select_slider("Lap", done, value=min(20, done[-1]) if 20 in done else done[len(done) // 2],
+                                     key="re_lap")
+            sims = c[3].selectbox("Sims", [100, 300, 1000], 1, key="re_sims")
+            call = cached_engineer_call(season, race, driver, int(lap), int(sims))
+            if call is None:
+                st.info("No call at this lap (the engineer needs a few laps of pace first).")
+            else:
+                h = call["headline"]
+                colour = NEUTRAL if h.startswith("STAY") else "#f5a524"
+                st.markdown(f"<div style='font-size:1.5rem;font-weight:800;color:{colour}'>{h}</div>",
+                            unsafe_allow_html=True)
+                st_ = call["standings"]
+                me = st_[st_.Driver == driver]
+                ty = call.get("tyres") or {}
+                st.caption(f"End of lap {call['lap']}/{call['total_laps']} · {driver} "
+                           f"P{int(me.Pos.iloc[0]) if len(me) else '?'} · {ty.get('compound', '?').title()}, "
+                           f"{ty.get('age', 1) - 1} laps old · "
+                           f"{'2-compound rule ✓' if ty.get('rule_met') else '2-compound rule still to meet'}"
+                           f" · {len(call.get('estimated') or [])} cars estimated (not at the line yet)")
+
+                # what the team really did after this lap
+                r = laps_df[(laps_df.Season == season) & (laps_df.Race == race) & (laps_df.Driver == driver)]
+                r = r.sort_values("LapNumber")
+                nxt = r[(r.LapNumber > lap) & r.PitInTime.notna() & (r.LapNumber < feed.total_laps)]
+                if len(nxt):
+                    pl = int(nxt.LapNumber.iloc[0])
+                    after = r[r.LapNumber == pl + 1].Compound
+                    team = f"boxed at the end of lap {pl} ({pl - lap} lap{'s' if pl - lap != 1 else ''} later) " \
+                           f"onto {after.iloc[0].title() if len(after) else '?'}"
+                else:
+                    team = "made no more stops"
+                fin = res.get(driver)
+                k = st.columns(3)
+                k[0].metric("Engineer", h.split(" — ")[0])
+                k[1].metric("The team", team.split(" (")[0].replace("boxed at the end of", "box").capitalize())
+                k[2].metric("Real result", f"P{int(fin)}" if pd.notna(fin) else "DNF")
+                st.caption(f"In reality {driver} {team}.")
+
+                left, right = st.columns([3, 2])
+                with left:
+                    st.markdown("**Options — every one raced to the flag on the same simulated races**")
+                    opt = call["options"].copy()
+                    for col in ("P(win)", "P(podium)", "P(points)"):
+                        opt[col] = (opt[col] * 100).round(0).astype(int).astype(str) + " %"
+                    opt["vs stay out"] = [("—" if o.startswith("Stay out") else f"{g:+.2f} ± {ci:.2f}")
+                                          for o, g, ci in zip(opt.Option, opt["Gain vs first (places)"],
+                                                              opt["Gain 95% CI"])]
+                    st.dataframe(opt[["Option", "P(win)", "P(podium)", "P(points)", "Exp. position", "vs stay out"]]
+                                 .round(2), hide_index=True, width="stretch")
+                    a = call.get("alert")
+                    if a:
+                        st.info(f"Undercut check on {a['target']} ({a['gap']:.1f} s ahead): **{a['verdict']}** · "
+                                f"P(pass) {a['p_overtake']:.0%}")
+                    st.caption("Known biases: one-stop strategies look too good at high-degradation circuits "
+                               "(\"NO MORE STOPS\" in Bahrain, where everyone really stopped twice); rivals follow "
+                               "an assumed default plan; dry races only.")
+                with right:
+                    st.markdown("**Timing at the end of the lap** (~ = estimated)")
+                    plans = call.get("rival_plans") or {}
+                    tower = pd.DataFrame({
+                        "Pos": st_.Pos.astype(int),
+                        "Driver": [("~" if e else "") + d for d, e in zip(st_.Driver, st_.get("Estimated", False))],
+                        "Gap": ["LEADER" if i == 0 else f"+{g:.1f}" for i, g in enumerate(st_.Gap)],
+                        "Tyre": [f"{c_[0]} ({int(a_)})" for c_, a_ in zip(st_.Compound, st_.TyreAge)],
+                        "Stops": st_.Stops.astype(int),
+                        "Next stop (assumed)": [" · ".join(f"L{l_}→{c_[0]}" for l_, c_ in plans.get(d, [])) or "—"
+                                                for d in st_.Driver]})
+                    st.dataframe(tower, hide_index=True, width="stretch", height=560)

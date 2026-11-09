@@ -5,6 +5,8 @@ worker thread, synthetic race. Skipped when PySide6 is not installed.
 import os
 import time
 
+import numpy as np
+
 import pytest
 
 try:
@@ -144,3 +146,30 @@ def test_closing_waits_for_a_call_in_progress(app, monkeypatch):
     time.sleep(0.3)                                               # the slow call is running now
     w.stop()
     assert not w.isRunning()
+
+
+def test_track_map_draws_the_stand_in_race_on_the_circuit(app):
+    """TRACK MAP opens a second window fed by the same stream; cars sit on the GPS outline."""
+    from integrations.f1_race_replay.track_view import TrackMap
+    feed = RaceFeed(make_race(20), 2099, RACE)
+    p = feed.payload(line(feed, "D00", 3) + 30)
+    assert p["position_source"] == "lap-fraction" and len(p["track_geometry"]["x"]) == 400
+    d = p["frame"]["drivers"]["D00"]
+    gx, gy = np.asarray(p["track_geometry"]["x"]), np.asarray(p["track_geometry"]["y"])
+    assert np.min(np.hypot(gx - d["x"], gy - d["y"])) < 300          # on the outline (dm), not on a circle
+    m = TrackMap("D00")
+    m.resize(700, 500)
+    m.set_payload(p)
+    m.set_payload(feed.payload(line(feed, "D00", 3) + 34))
+    img = m.grab().toImage()                                         # paints without errors
+    assert img.width() == 700 and m.geometry_xy is not None and len(m._frac) == 20
+    server = StreamServer(port=0)
+    w = RaceEngineerWindow(port=server.port, driver="D00", n_sims=10)
+    try:
+        w.show()
+        w.open_track_map()
+        pump(app, server, feed, line(feed, "D00", 2), lambda: w.track_map.payload is not None)
+        assert w.track_window.isVisible()
+    finally:
+        w.close()
+        server.close()

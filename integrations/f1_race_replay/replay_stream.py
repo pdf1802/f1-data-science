@@ -21,8 +21,10 @@ Fields sent — same names, meaning and clocks as the real payload:
 Not in the real payload:
     session_info: {event_name, year}         ← proposed upstream (the window needs the circuit)
     take_control: {...}                      ← only in take-control mode
-Positions are SCHEMATIC: cars move round a circle at constant speed within each
-lap (x, y, rel_dist), because the Parquet has lap times, not GPS.
+Positions are SCHEMATIC: the Parquet has lap times, not GPS, so each car moves at
+constant speed within a lap (rel_dist = elapsed / lap time) and is drawn at that
+fraction of the circuit's GPS outline (tools/circuit_outlines.json, sent as
+track_geometry; a circle if the circuit has no outline). position_source says so.
 
 Take control: the stream always replays the real race. At any moment a client
 (the Race Engineer window's TAKE CONTROL button) can hand the race to the
@@ -112,6 +114,14 @@ class RaceFeed:
         first = r[r["LapNumber"] == 1]
         self.t0 = float((first["end"] - first["lt"].fillna(first["lt"].median())).min())   # session clock
         self.length_m = float(CIRCUIT_LENGTH_M.get(circuit_name(race) or "", 5000))
+        from tools.circuit_outlines import outline_for
+        self.outline = outline_for(race)                          # GPS shape of the track, or None
+        if self.outline:
+            ox, oy = np.asarray(self.outline["x"], float), np.asarray(self.outline["y"], float)
+            self._outline_xy = np.vstack([np.column_stack([ox, oy]), [[ox[0], oy[0]]]])
+            self._outline_s = np.concatenate([[0.0], np.cumsum(np.hypot(*np.diff(self._outline_xy, axis=0).T))])
+            self.geometry = {"x": self.outline["x"], "y": self.outline["y"],
+                             "rotation_deg": self.outline["rotation_deg"]}
         self.typical_lap = float(r.loc[r["LapNumber"] > 1, "lt"].median())
         self.colors = {d: team_colour(str(t)) for d, t in r.groupby("Driver")["Team"].first().items()}
         self.weather = {"track_temp": float(r["TrackTemp"].iloc[0]) if "TrackTemp" in r else None,
@@ -197,16 +207,15 @@ class RaceFeed:
         key = {d: (p["lap"] + p["rel"] - (1e-7 * p["last_line"] if p["state"] == "finished" else 0.0))
                for d, p in prog.items()}
         order = sorted(prog, key=lambda d: -key[d])
-        R = self.length_m / (2 * math.pi)
         drivers = {}
         for pos, d in enumerate(order, 1):
             p, tl = prog[d], self.tl[d]
             frac = (p["lap"] - 1) + p["rel"]
-            ang = 2 * math.pi * p["rel"]
+            x, y = self._xy(p["rel"])
             drivers[d] = {
                 "position": pos, "lap": p["lap"], "rel_dist": round(p["rel"], 4),
                 "dist": frac * self.length_m, "fraction": frac,
-                "x": R * math.cos(ang), "y": R * math.sin(ang),
+                "x": x, "y": y,
                 "tyre": float(tl["tyre"][p["i"]]), "tyre_life": float(tl["life"][p["i"]]),
                 "in_pit": p["in_pit"],
             }
@@ -226,7 +235,19 @@ class RaceFeed:
             # whole race, like the real replay (consumers must not read the future from it)
             "status_laps": _merge_status({k: v for k, v in self.status.items() if self._status_known(k, upto)}),
             "session_info": {"event_name": self.race, "year": self.season},
+            # like f1-race-replay's track_geometry; positions are a lap fraction placed on it (not GPS)
+            **({"track_geometry": self.geometry} if self.outline else {}),
+            "position_source": "lap-fraction",
         }
+
+    def _xy(self, rel: float) -> tuple[float, float]:
+        """Where a car at fraction `rel` of the lap is drawn: on the GPS outline if known, else a circle."""
+        if self.outline:
+            s = (rel % 1.0) * self._outline_s[-1]
+            return (round(float(np.interp(s, self._outline_s, self._outline_xy[:, 0])), 1),
+                    round(float(np.interp(s, self._outline_s, self._outline_xy[:, 1])), 1))
+        R, ang = self.length_m / (2 * math.pi), 2 * math.pi * rel
+        return R * math.cos(ang), R * math.sin(ang)
 
     def _status_now(self, lead_lap: int) -> str:
         """
