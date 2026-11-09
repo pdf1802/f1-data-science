@@ -6,14 +6,18 @@ telemetry stream and, every time the driver you follow crosses the line, makes t
 
 ![Race Engineer window](../../docs/race_engineer_window.png)
 
-*2023 Bahrain GP, following Alonso, take-control mode (offscreen render on Linux; on Windows it uses Segoe UI).*
+*2023 Bahrain GP, following Alonso: TAKE CONTROL pressed on lap 19, Alonso boxed onto HARD on lap 21 with the button
+(offscreen render on Linux; on Windows it uses Segoe UI).*
 
 Three pieces:
 
 | File | What it is |
 |------|------------|
-| `race_engineer_window.py` | The PySide6 window: call, options, timing tower, undercut alert, take-control buttons |
-| `replay_stream.py` | A stand-in for f1-race-replay's stream, built from the lap Parquet — same message shape and clocks; plus **take-control** mode |
+| `race_engineer_window.py` | The PySide6 window: call, options, timing tower, undercut alert, **TAKE CONTROL** and BOX buttons, TRACK MAP |
+| `replay_stream.py` | A stand-in for f1-race-replay's stream, built from the lap Parquet — same message shape and clocks; the real race until a client takes control |
+| `track_view.py` | The race drawn on the real circuit (GPS outline from `tools/circuit_outlines.json`); with either stream |
+| `run_real_replay.py` | Runs the real f1-race-replay **offline** on a race in your FastF1 cache |
+| `real_payloads.py` | Captures f1-race-replay's real payloads (no window shown) to check the engineer on them |
 | `../../tools/race_engineer.py` | The engineer itself (no GUI): payload → call. Used by the window, testable on its own |
 
 ## Run it
@@ -31,21 +35,35 @@ python -m integrations.f1_race_replay.replay_stream --race "2023 Bahrain Grand P
 python -m integrations.f1_race_replay.race_engineer_window --driver ALO
 ```
 
-**Take control** — the real race until lap 20, then the race engine drives and you call the stops:
+**Take control** — press **TAKE CONTROL** in the window whenever you want. The race engine takes over from the
+end of the lap the leader has just completed (laps already completed stay real) and the **BOX → SOFT / MEDIUM /
+HARD** and **STAY OUT** buttons decide your driver's stops. You can also type `take`, `box ALO HARD` or
+`stay ALO` in the stream's terminal, or start with `--take-control 20` to hand over automatically after lap 20
+(the same race as pressing the button then — tested). The other cars follow the default plan the engineer
+assumes for them.
+
+**Track map** — the **TRACK MAP** button (or `--track`) opens the race drawn on the circuit, fed by the same
+stream; `python -m integrations.f1_race_replay.track_view --driver ALO` runs it on its own connection. With the
+stand-in stream the cars sit at their fraction of the lap on the circuit's GPS outline (the Parquet has no GPS),
+animated between payloads; with the real replay they are the real GPS positions.
+
+**With the real f1-race-replay, offline.** F1's archive answers 401 since October 2026, so f1-race-replay can
+only replay races already in a FastF1 cache — with car **and** position data. `run_real_replay.py` points it at
+your cache, puts FastF1 in offline mode and replaces the two calls that need the internet even for a cached race
+(circuit rotation → the track's principal axis; championship standings → none):
 
 ```bash
-python -m integrations.f1_race_replay.replay_stream --race "2023 Bahrain Grand Prix" --take-control 20 --speed 20
-python -m integrations.f1_race_replay.race_engineer_window --driver ALO
+git clone https://github.com/IAmTomShaw/f1-race-replay ../f1-race-replay
+pip install -r ../f1-race-replay/requirements.txt
+python -m integrations.f1_race_replay.run_real_replay --list        # e.g. 2023 Bahrain, 2023 Saudi Arabia, 2023 Australia, 2024 Saudi Arabia
+python -m integrations.f1_race_replay.run_real_replay --race "2023 Bahrain Grand Prix"
+python -m integrations.f1_race_replay.race_engineer_window --driver ALO --circuit "Bahrain Grand Prix"
 ```
 
-Use the **BOX → SOFT / MEDIUM / HARD** and **STAY OUT** buttons, or type `box ALO HARD` / `stay ALO`
-in the stream's terminal. The other cars follow the same default plan the engineer assumes for them.
-
-**With the real f1-race-replay** (when FastF1 can download position data again — it answers 401 since
-October 2026): run `python main.py --telemetry` in that repo, pick a race, then start the window. The
-real payload has no event name, so the window guesses the circuit from `circuit_length_m` and the race
-distance in laps — pick it in the **CIRCUIT** box when that is ambiguous (Bahrain/Miami, Monza/Suzuka and
-Yas Marina/Albert Park share both).
+The real payload has no event name, so without `--circuit` the window guesses the circuit from
+`circuit_length_m` and the race distance in laps — pick it in the **CIRCUIT** box when that is ambiguous
+(Bahrain/Miami, Monza/Suzuka and Yas Marina/Albert Park share both). Take control is off with the real replay
+(it replays the real race; the window says so).
 
 Options: `--circuit "Bahrain Grand Prix"`, `--sims 300` (Monte Carlo races per option; ~1–2 s per call),
 `--port`. Stream options: `--start-lap`, `--speed`, `--hz`, `--seed`.
@@ -54,9 +72,9 @@ Options: `--circuit "Bahrain Grand Prix"`, `--sims 300` (Monte Carlo races per o
 
 1. **Snapshot at the end of lap N** — the lap the followed driver has just completed. Cars ahead on the
    road crossed that line already: their real times are used. Cars behind, and lapped cars, have not —
-   their line time is **estimated** from their recent pace (plus the rest of the stop if they are on
-   their out-lap), or from `rel_dist` in the frame when they are in the last 10 % of the lap — it is
-   distance, not time, so it is only trusted near the line. They are marked `~` in the tower. *(The first version took N from the leader and silently
+   their line time is **estimated** from their last crossing and recent pace (plus the rest of the stop if
+   they are on their out-lap). They are marked `~` in the tower. The frame's `rel_dist` is **not** used: on
+   real f1-race-replay frames it made the estimate worse (below). *(The first version took N from the leader and silently
    dropped every car that had not completed lap N yet — "ALO is not running".)*
    - A car in the pit lane (`in_pit`) that has not crossed the line yet is treated as stopping at the end
      of lap N, onto HARD (MEDIUM if it was on HARD) — a guess: the new compound isn't known yet.
@@ -104,7 +122,10 @@ refreshes at 4 Hz whatever the stream rate.
 
 ## Take-control mode
 
-From the real state at the end of lap N (`race_engine.state_from_real_race`), `TakeControlFeed` steps
+`ReplaySession` serves the real race (`RaceFeed`) until a client sends `{"cmd": "take_control"}`. N is then the
+last lap the leader has completed; every car's real line time for lap N, tyres and stops are kept, so nothing
+that already happened changes (tested). From the real state at the end of lap N
+(`race_engine.state_from_real_race`), `TakeControlFeed` steps
 the lap-by-lap engine just ahead of the replay clock and turns each simulated lap into the same payload
 fields (`frame`, `lap_times` with `source: "simulated"`, `status_laps`). A **box command** applies to the
 lap the car is on (the next one if it is past 85 % of the lap): the engine rewinds to the end of the
@@ -119,8 +140,12 @@ tyre, tyre_life, in_pit}`, `frame.weather`, `track_status`, `session_data.{time_
 is_pit_entry, is_out_lap, fastf1_generated}`, `status_laps`, `circuit_length_m`. Tyre ints: SOFT 0,
 MEDIUM 1, HARD 2, INTERMEDIATE 3, WET 4.
 
+Also sent by f1-race-replay: `track_geometry: {x, y, rotation_deg, …}` every ~120 frames (the stand-in sends
+it in every message, from `tools/circuit_outlines.json`).
+
 Not in the real payload: `session_info: {event_name, year}` (proposed upstream — see
-`UPSTREAM_PROPOSAL.md`) and `take_control` (stand-in stream only). Positions in the stand-in stream are
+`UPSTREAM_PROPOSAL.md`), `take_control` (stand-in stream only: `available`, `active`, `from_lap`, `log`, …) and
+`position_source: "lap-fraction"` (stand-in positions are a lap fraction placed on the outline, not GPS). Positions in the stand-in stream are
 schematic (constant speed within each lap, cars on a circle): the Parquet has lap times, not GPS.
 
 ## Tests
@@ -140,11 +165,13 @@ thread, and is skipped if PySide6 is not installed.
 - Rivals follow a simple default plan, not their real strategy — the call is "given what we assume
   they do".
 - Dry races only: on INTERMEDIATE / WET the window says so and makes no call.
-- Line times of cars behind are estimates (`python -m integrations.f1_race_replay.estimate_accuracy`,
-  2,736 estimates in Bahrain 2023, Monza 2024 and Monaco 2025, through the stand-in stream): median
-  error **0.40 s** (90 % under 2.9 s) when that car does not stop in the lap, 0.02 s within 10 s of the
-  line, 4.7 s when it does stop (an in-lap's stop is still in the future). Using `rel_dist` all round the
-  lap would look better here (0.18 s), but only because the stand-in's `rel_dist` is built from the
-  lap's real duration; accuracy with the real, distance-based `rel_dist` is not measured.
-- Take-control: no DNFs and no new weather.
+- Line times of cars behind are estimates. **Measured on the real f1-race-replay stream**
+  (`python -m integrations.f1_race_replay.real_payloads`, Bahrain 2023 following ALO, 701 estimates): median
+  error **0.26 s** (90 % under 1.9 s) when that car does not stop in the lap, 0.23 s within 10 s of the line,
+  2.8 s when it does stop (an in-lap's stop is still in the future). Using `rel_dist` in the last 10 % of the
+  lap (the previous version) gave 1.18 s within 10 s of the line; all round the lap, 1.79 s. On the stand-in
+  stream (`estimate_accuracy.py`) `rel_dist` looks almost perfect (0.02 s) — because the stand-in builds it from
+  the lap's real duration: a leak, which is why the real stream is the one that decides.
+- Take-control: no DNFs and no new weather; only with the stand-in stream.
+- Real replay offline: only races whose car and position data are in your cache (four races in the author's).
 - Model era: 2022–2025 cars and rules; 2026 is excluded on purpose.

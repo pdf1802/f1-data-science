@@ -465,6 +465,8 @@ class RaceEngineerWindow(QMainWindow):
             b.setEnabled(False)
         self.tc_log = QListWidget()
         self.tc_log.setMaximumHeight(96)
+        self.tc_log.setWordWrap(True)
+        self.tc_log.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.tc_panel = panel(head_row, tc, self.tc_log, caption="TAKE CONTROL")
         grid.addWidget(self.tc_panel, 1, 0)
         grid.setColumnStretch(0, 6)

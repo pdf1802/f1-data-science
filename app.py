@@ -235,7 +235,7 @@ with tabs[0]:
         total_laps = c1.number_input("Race laps", 20, 80, int(prof.get("laps", 52)))
         start_c = c2.selectbox("Default start tyre", COMPOUNDS, index=1)
         next_c = c3.selectbox("Default 2nd tyre", COMPOUNDS, index=2)
-        pit_lap = c4.number_input("Default pit lap", 2, 78, int(round(52 * 0.45)))
+        pit_lap = c4.number_input("Default pit lap", 2, 78, int(round(total_laps * 0.45)))
 
         if st.button("Load grid from qualifying", key="load_grid"):
             try:
@@ -686,7 +686,7 @@ with tabs[5]:
             st.markdown(f"**Corner by corner** — positive values favour **{b}**")
             st.dataframe(
                 corners.style.background_gradient(subset=["Time gain (ms)"], cmap="RdBu",
-                                                  vmin=-60, vmax=60),
+                                                  vmin=-60, vmax=60).format(precision=1),
                 hide_index=True, width="stretch")
             if len(corners):
                 best_c = corners.loc[corners["Time gain (ms)"].abs().idxmax()]
