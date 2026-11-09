@@ -491,18 +491,40 @@ def resample_telemetry(tel: pd.DataFrame, n_points: int = 300,
     return pd.DataFrame(out)
 
 
+FULL_THROTTLE = 95.0      # % — Module 3 V3 (V2: > 98, see extract_style_features)
+
+
+def style_lap_ok(resampled_tel: pd.DataFrame) -> tuple[bool, str]:
+    """
+    Data-quality gate for Module 3: is every channel the features use alive on this lap?
+    Found in the V3 re-run: RUS, Miami 2025 Q — throttle 0 for the whole lap (dead channel).
+    """
+    def top(ch):
+        v = resampled_tel[ch].to_numpy(dtype=float)
+        return float(np.max(v)) if np.isfinite(v).all() else float("nan")   # any NaN → channel unusable
+
+    for ch, minimum, why in (("Throttle", 90, "throttle channel dead (max < 90 %) or missing"),
+                             ("Brake", 1e-9, "brake channel dead or missing"),
+                             ("Speed", 150, "speed channel implausible or missing")):
+        if not top(ch) >= minimum:                       # also catches NaN
+            return False, why
+    return True, ""
+
+
 def extract_style_features(resampled_tel: pd.DataFrame) -> dict:
     """
-    The 5 Module 3 V2 style features. Definitions are copied *exactly* from
-    driver_style_fingerprinting.ipynb — any drift here would put new drivers
-    in the wrong cluster without any error.
+    The 5 Module 3 style features (V3).
+
+    V3 change: full throttle is throttle >= 95 % (FULL_THROTTLE). V2 used > 98 %, and some cars'
+    throttle signal tops out at 98 % — NOR, Bahrain 2024 Q, read 5 % "full throttle" instead of
+    ~70 %. A threshold right at the top of a sensor's range measures the sensor, not the driver.
     """
     throttle = resampled_tel["Throttle"].values
     brake = resampled_tel["Brake"].values
     speed = resampled_tel["Speed"].values
     return {
         "brake_application_pct": float(brake.mean()),
-        "full_throttle_pct":     float((throttle > 98).mean()),
+        "full_throttle_pct":     float((throttle >= FULL_THROTTLE).mean()),
         "coasting_pct":          float(((throttle < 2) & (brake < 0.5)).mean()),
         "throttle_smoothness":   float(np.std(np.diff(throttle))),
         "min_speed_ratio":       float(speed.min() / speed.max()),

@@ -188,3 +188,16 @@ def test_real_strategies_override_the_default_plan():
     a = g.set_index("Driver").loc["AAA"]
     assert (a.StartCompound, a.StartAge, a.Stop1Lap, a.Stop1Compound, a.Stop2Lap) == ("MEDIUM", 5, 10, "HARD", 0)
     assert validate_grid(g, 20) == []
+
+
+def test_style_features_survive_a_98_percent_throttle_ceiling_and_dead_channels():
+    grid = np.linspace(0, 1, 300)
+    lap = pd.DataFrame({"RelativeDistance": grid, "Speed": 100 + 200 * np.abs(np.sin(6 * grid)),
+                        "Throttle": np.where(np.sin(6 * grid) ** 2 > 0.3, 99.0, 20.0),
+                        "Brake": (np.sin(6 * grid) ** 2 < 0.1).astype(float), "DRS": 0.0})
+    capped = lap.assign(Throttle=lap.Throttle.clip(upper=98.0))           # sensor tops out at 98 %
+    f, g = shared.extract_style_features(lap), shared.extract_style_features(capped)
+    assert f["full_throttle_pct"] == pytest.approx(g["full_throttle_pct"]) and f["full_throttle_pct"] > 0.5
+    assert shared.style_lap_ok(lap) == (True, "")
+    assert not shared.style_lap_ok(lap.assign(Throttle=0.0))[0]           # RUS, Miami 2025 Q
+    assert not shared.style_lap_ok(lap.assign(Throttle=np.nan))[0]
