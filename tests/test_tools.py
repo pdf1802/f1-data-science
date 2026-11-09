@@ -141,3 +141,50 @@ def test_dnfs_are_excluded_from_race_result():
                         "ClassifiedPosition": ["1", "2", "R"], "Position": [1.0, 2.0, 19.0]})
     out = classified_finishers(res)
     assert out.to_dict() == {"HAM": 1, "VER": 2}
+
+
+# ── validation helpers on real-race-shaped data ──────────────────────────────
+def _duel(a_pit=10, b_pit=11, a_gain=1.5, sc_lap=None, n=20):
+    """Two cars: B leads, A 1.0 s behind at the end of lap 9. A pits at the end of lap a_pit, B at b_pit.
+    In-lap +4 s, out-lap +19 s; fresh tyres are a_gain s/lap faster than the old ones."""
+    rows = []
+    for d, pit, start in (("AAA", a_pit, 1.0), ("BBB", b_pit, 0.0)):
+        t, comp, age = 3600.0 + start, "MEDIUM", 5
+        for lap in range(1, n + 1):
+            lt = 90.0 + (0.0 if comp == "MEDIUM" else -a_gain) + (4.0 if lap == pit else 0.0) + (19.0 if lap == pit + 1 else 0.0)
+            t += lt
+            rows.append({"Season": 2099, "Race": "Bahrain Grand Prix", "Driver": d, "Team": "Ferrari",
+                         "LapNumber": float(lap), "Time": pd.Timedelta(seconds=t), "Compound": comp,
+                         "TyreLife": float(age), "Stint": 1.0 if lap <= pit else 2.0,
+                         "PitInTime": pd.Timedelta(seconds=t) if lap == pit else pd.NaT,
+                         "TrackStatus": "4" if lap == sc_lap else "1", "TrackTemp": 35.0, "AirTemp": 25.0,
+                         "TotalLaps": n})
+            if lap == pit:
+                comp, age = "HARD", 1
+            else:
+                age += 1
+    return pd.DataFrame(rows)
+
+
+def test_undercut_attempts_finds_the_duel_and_its_outcome():
+    from tools.undercut import undercut_attempts
+    att = undercut_attempts(_duel())
+    assert len(att) == 1
+    x = att.iloc[0]
+    assert (x.A, x.B, x.lap, x.reaction) == ("AAA", "BBB", 9, 1) and x.gap == pytest.approx(1.0)
+    # at the end of lap 12 (B's out-lap): A paid 4 + 19 and gained 1.5 twice; B paid 4 + 19 and gained 1.5 once
+    assert x.final_gap == pytest.approx(1.0 + (4 + 19 - 1.5 - 1.5) - (4 + 19 - 1.5)) and x.worked
+    assert not undercut_attempts(_duel(a_gain=0.5)).iloc[0].worked              # small tyre gain: it fails
+    assert undercut_attempts(_duel(sc_lap=11)).empty                            # Safety Car: not a green undercut
+    assert undercut_attempts(_duel(b_pit=15)).empty                             # B reacted too late to count
+
+
+def test_real_strategies_override_the_default_plan():
+    from tools.race_simulator import with_real_strategies
+    duel = _duel()
+    q = pd.DataFrame({"Driver": ["BBB", "AAA"], "Team": ["Ferrari", "Ferrari"], "QualyTime": [90.0, 90.1],
+                      "QualyRank": [1, 2]})
+    g = with_real_strategies(grid_from_qualifying(q, 20), duel, 2099, "Bahrain Grand Prix")
+    a = g.set_index("Driver").loc["AAA"]
+    assert (a.StartCompound, a.StartAge, a.Stop1Lap, a.Stop1Compound, a.Stop2Lap) == ("MEDIUM", 5, 10, "HARD", 0)
+    assert validate_grid(g, 20) == []

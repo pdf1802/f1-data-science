@@ -183,5 +183,90 @@ def undercut_sweep(chaser: DriverState, leader: DriverState, current_lap: int,
     return pd.DataFrame(out)
 
 
-__all__ = ["DriverState", "undercut_analysis", "undercut_sweep", "SCENARIOS",
-           "WORST_CASE", "VERDICT_GAP", "VERDICT_PROB", "replace"]
+# ── Validation on real races ─────────────────────────────────────────────────
+NOT_GREEN = ("4", "5", "6", "7")          # SC, red flag, VSC, VSC ending
+
+
+def undercut_attempts(laps: pd.DataFrame, max_gap: float = 3.0, max_reaction: int = 3) -> pd.DataFrame:
+    """
+    Every real undercut attempt in a FastF1-shaped lap table: at the end of lap n-1 car A runs
+    directly behind car B (gap ≤ max_gap s, nobody in between); A pits at the end of lap n, B
+    stays out on lap n and pits within the next `max_reaction` laps (lap m). Green flag from lap
+    n-1 to m+1 for both. Outcome: did A come out ahead at the end of lap m+1 (B's out-lap)?
+
+    Returns one row per attempt with the state at the decision moment (end of lap n-1),
+    the compounds actually fitted and the outcome (`worked`).
+    """
+    d = laps[["Season", "Race", "Driver", "Team", "LapNumber", "Time", "Compound", "TyreLife",
+              "PitInTime", "TrackStatus", "TrackTemp", "AirTemp"]].copy()
+    d["T"] = pd.to_timedelta(d["Time"]).dt.total_seconds()
+    d = d.dropna(subset=["T"])
+    d["LapNumber"] = d["LapNumber"].astype(int)
+    out = []
+    for (season, race), r in d.groupby(["Season", "Race"]):
+        by = {k: g.set_index("LapNumber") for k, g in r.groupby("Driver")}
+        green = {k: ~g["TrackStatus"].astype(str).str.contains("|".join(NOT_GREEN)) for k, g in by.items()}
+        for a, ga in by.items():
+            for n in ga.index[ga["PitInTime"].notna()]:
+                if n - 1 not in ga.index or n + 1 not in ga.index:
+                    continue
+                lap_prev = r[r["LapNumber"] == n - 1].sort_values("T")
+                order = lap_prev["Driver"].tolist()
+                if a not in order or order.index(a) == 0:
+                    continue
+                b = order[order.index(a) - 1]                      # the car directly ahead
+                gb = by[b]
+                gap = float(ga.at[n - 1, "T"] - gb.at[n - 1, "T"])
+                if not 0 < gap <= max_gap or n not in gb.index or pd.notna(gb.at[n, "PitInTime"]):
+                    continue
+                stops = [m for m in range(n + 1, n + 1 + max_reaction)
+                         if m in gb.index and pd.notna(gb.at[m, "PitInTime"])]
+                if not stops:
+                    continue
+                m = stops[0]
+                laps_needed = range(n - 1, m + 2)
+                if not all(k in ga.index and k in gb.index for k in laps_needed):
+                    continue
+                if not all(green[a].get(k, False) and green[b].get(k, False) for k in laps_needed):
+                    continue
+                if pd.notna(ga.loc[n + 1:m + 1, "PitInTime"]).any():   # A stopped again: not an undercut
+                    continue
+                if pd.isna(ga.at[n - 1, "TyreLife"]) or pd.isna(gb.at[n - 1, "TyreLife"]):
+                    continue
+                out.append({
+                    "Season": season, "Race": race, "lap": n - 1, "A": a, "B": b, "gap": round(gap, 3),
+                    "team_A": ga.at[n - 1, "Team"], "team_B": gb.at[n - 1, "Team"],
+                    "pos_A": order.index(a) + 1,
+                    "comp_A": ga.at[n - 1, "Compound"], "age_A": int(ga.at[n - 1, "TyreLife"]),
+                    "comp_B": gb.at[n - 1, "Compound"], "age_B": int(gb.at[n - 1, "TyreLife"]),
+                    "new_A": ga.at[n + 1, "Compound"], "new_B": gb.at[m + 1, "Compound"],
+                    "reaction": m - n,
+                    "track_temp": float(ga.at[n - 1, "TrackTemp"]), "air_temp": float(ga.at[n - 1, "AirTemp"]),
+                    "worked": bool(ga.at[m + 1, "T"] < gb.at[m + 1, "T"]),
+                    "final_gap": round(float(ga.at[m + 1, "T"] - gb.at[m + 1, "T"]), 3),
+                })
+    return pd.DataFrame(out)
+
+
+def backtest_attempts(attempts: pd.DataFrame) -> pd.DataFrame:
+    """Run the calculator at the decision moment of every real attempt; add its verdict and gap curve."""
+    dry = {"SOFT", "MEDIUM", "HARD"}
+    rows = []
+    for x in attempts.itertuples(index=False):
+        if not {x.comp_A, x.comp_B, x.new_A, x.new_B} <= dry:
+            continue
+        a = DriverState(x.A, x.team_A, x.pos_A, x.comp_A, x.age_A)
+        b = DriverState(x.B, x.team_B, x.pos_A - 1, x.comp_B, x.age_B)
+        cfg = {"track_temp": x.track_temp, "air_temp": x.air_temp, "circuit": x.Race}
+        r = undercut_analysis(a, b, x.gap, x.lap, cfg, new_compound=x.new_A, leader_compound=x.new_B)
+        scen = "Leader reacts next lap" if x.reaction == 1 else (
+            "Leader reacts in 3 laps" if x.reaction == 3 else None)
+        rows.append({**x._asdict(), "verdict": r["verdict"], "min_gap_pred": r["min_gap"],
+                     "p_overtake": r["confidence"],
+                     # projected gap at the end of B's out-lap, in the scenario that really happened
+                     "final_gap_pred": (r["curves"][scen][x.reaction + 2] if scen else np.nan)})
+    return pd.DataFrame(rows)
+
+
+__all__ = ["DriverState", "undercut_analysis", "undercut_sweep", "undercut_attempts", "backtest_attempts",
+           "SCENARIOS", "WORST_CASE", "VERDICT_GAP", "VERDICT_PROB", "replace"]

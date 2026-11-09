@@ -74,6 +74,32 @@ def grid_from_qualifying(quali: pd.DataFrame, total_laps: int,
     })[GRID_COLUMNS]
 
 
+def with_real_strategies(grid: pd.DataFrame, laps: pd.DataFrame, season: int, race: str) -> pd.DataFrame:
+    """
+    The same grid with the strategy each driver REALLY ran in that race (start compound and tyre
+    age, the first two stops: in-lap and the compound fitted). Used to check the engine against a
+    real result: given the real strategies, does simulating the race beat the grid order?
+    Drivers with no dry laps in the race keep the grid's default plan.
+    """
+    r = laps[(laps["Season"] == season) & (laps["Race"] == race)].dropna(subset=["Stint"])
+    g = grid.copy()
+    for d, x in r.groupby("Driver"):
+        if d not in set(g["Driver"]):
+            continue
+        st = (x.sort_values("LapNumber").groupby("Stint")
+               .agg(c=("Compound", "first"), a=("TyreLife", "first"), last=("LapNumber", "max")))
+        if not set(st["c"]) <= {"SOFT", "MEDIUM", "HARD"}:
+            continue
+        i = g.index[g["Driver"] == d][0]
+        g.loc[i, ["StartCompound", "StartAge"]] = [st["c"].iloc[0], int(st["a"].iloc[0]) if pd.notna(st["a"].iloc[0]) else 1]
+        for k in (1, 2):
+            if len(st) > k:
+                g.loc[i, [f"Stop{k}Lap", f"Stop{k}Compound"]] = [int(st["last"].iloc[k - 1]), st["c"].iloc[k]]
+            else:
+                g.loc[i, [f"Stop{k}Lap", f"Stop{k}Compound"]] = [0, st["c"].iloc[-1]]
+    return g
+
+
 def validate_grid(grid: pd.DataFrame, total_laps: int) -> list[str]:
     """Human-readable problems (empty list = OK). Shown in the dashboard."""
     errs = []
