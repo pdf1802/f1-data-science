@@ -173,3 +173,17 @@ def test_track_map_draws_the_stand_in_race_on_the_circuit(app):
     finally:
         w.close()
         server.close()
+
+
+def test_before_the_first_call_the_window_says_when_it_comes(app):
+    """Lap 1 of the real replay: connected, no call yet — the window says the first call is at lap 3."""
+    feed = RaceFeed(make_race(20), 2099, RACE)
+    server = StreamServer(port=0)
+    w = RaceEngineerWindow(port=server.port, driver="D03", n_sims=10)
+    try:
+        w.show()
+        pump(app, server, feed, 5.0, lambda: "first call when D03 completes lap 3" in w.sub.text(), dt=1.0)
+        assert w.last_call is None
+    finally:
+        w.close()
+        server.close()

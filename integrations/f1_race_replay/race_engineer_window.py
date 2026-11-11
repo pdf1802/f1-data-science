@@ -41,7 +41,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QFram
                                QTableWidgetItem, QVBoxLayout, QWidget)
 
 from integrations.f1_race_replay.replay_stream import CIRCUIT_LENGTH_M, PORT
-from tools.race_engineer import RaceEngineer, completed_laps, tyre_name
+from tools.race_engineer import MIN_CALL_LAP, RaceEngineer, completed_laps, tyre_name
 
 # ── look ─────────────────────────────────────────────────────────────────────
 BG, PANEL, PANEL_2, LINE = "#0f1012", "#17181b", "#1e2024", "#2a2d33"
@@ -650,6 +650,10 @@ class RaceEngineerWindow(QMainWindow):
             self.live.setText(f"Now: lap {sd.get('lap', '?')}/{sd.get('total_laps', '?')} (leader {sd.get('leader', '?')})"
                               f"  ·  {self.driver} P{fd.get('position', '?')} on lap {fd.get('lap', '?')},"
                               f" {tyre.title()} (lap {int(fd.get('tyre_life') or 0)} on the set){pit}")
+        if self.last_call is None and "computing" not in self.sub.text():
+            # connected, no call yet: say when the first one comes (the opening laps don't show pace yet)
+            self.sub.setText(f"Connected · first call when {self.driver or 'your driver'} completes lap {MIN_CALL_LAP} "
+                             f"(the opening laps don't show race pace yet). Speed the replay up to get there sooner.")
         self._refresh_take_control(p.get("take_control"))
 
     def _refresh_take_control(self, tc: dict | None):
