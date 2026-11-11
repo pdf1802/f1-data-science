@@ -1,11 +1,56 @@
-# Draft: proposal for IAmTomShaw/f1-race-replay
+# Draft: proposals for IAmTomShaw/f1-race-replay
 
-**Status: draft only — not submitted.** Text for an issue first (the project's contribution guidelines
-ask to discuss a feature in an issue before a PR), then the PR if the maintainer agrees.
+**Status: ready to post — not submitted.** They go out under Paco's name, so he posts them by hand
+(copy the title and body). The project's guidelines ask to discuss in an issue before a PR.
+Order: **Issue A** first (a bug, easy to accept), then **Issue B** (a small feature, with a PR offer).
+Checked on 11 Nov 2026 against upstream `9b3e39f`: neither is reported yet. Related: #354.
 
 ---
 
-## Issue
+## Issue A — bug
+
+**Title:** Cached sessions still fail offline: `get_circuit_rotation()` needs the MultiViewer API
+
+**Body:**
+
+Related to #354. Since F1 started answering 401 to unauthenticated timing downloads, the only races
+that can be replayed are the ones already in the FastF1 cache. Those load fine with FastF1's offline
+mode — every timing, car and position file comes from the cache — but the replay still crashes before
+the window opens, because `get_circuit_rotation()` calls `session.get_circuit_info()`, which always
+requests `https://api.multiviewer.app/api/v1/circuits/<key>/<year>` and is not cached.
+
+**Steps to reproduce**
+
+1. Have a race in the FastF1 cache with telemetry (e.g. 2023 Bahrain GP, loaded before October 2026).
+2. Enable FastF1 offline mode (`fastf1.Cache.offline_mode(True)`) or run without network.
+3. `python main.py --viewer --year 2023 --round 1`
+
+**Expected:** the replay opens from the cache.
+**Actual:** an exception from `get_circuit_info()` (`AttributeError: 'NoneType' object has no attribute
+'decode'` in offline mode; a request error without network). `main.py` line 144 calls it unguarded.
+
+**Suggested fix** (`src/f1_data.py`): fall back to a rotation computed from the track itself, so the map
+is still drawn sensibly:
+
+```python
+def get_circuit_rotation(session):
+    try:
+        return session.get_circuit_info().rotation
+    except Exception:
+        # No MultiViewer data (offline / API down): make the track's longest axis horizontal
+        pos = session.laps.pick_fastest().get_pos_data()
+        xy = np.column_stack([pos["X"], pos["Y"]]).astype(float)
+        xy -= xy.mean(axis=0)
+        vx, vy = np.linalg.eigh(np.cov(xy.T))[1][:, -1]
+        return -float(np.degrees(np.arctan2(vy, vx)))
+```
+
+Tested on 2023 Bahrain, 2023 Saudi Arabia, 2023 Australia and 2024 Saudi Arabia from a local cache with
+offline mode on: the replay and the telemetry stream work end to end. Happy to open a PR.
+
+---
+
+## Issue B — feature
 
 **Title:** Telemetry stream: include the session (event name, year, round) in the payload
 
@@ -19,7 +64,8 @@ except for one thing: **a client can't tell which race is playing.**
 Anything circuit-specific (pit-loss time, Safety Car likelihood, overtaking difficulty, degradation)
 needs the event. Today a client can only guess from `circuit_length_m` and `session_data.total_laps`,
 and that is ambiguous for several tracks (Bahrain and Miami are both ~5.41 km and 57 laps; Monza and
-Suzuka are both ~5.8 km and 53 laps).
+Suzuka are both ~5.8 km and 53 laps; Yas Marina and Albert Park too). I checked it against the real
+payloads of the current version: there is no other field that identifies the race.
 
 `F1RaceReplayWindow` already receives this information as `session_info` (used for the HUD banner), so
 the change is small and backwards compatible: add it to the broadcast.
