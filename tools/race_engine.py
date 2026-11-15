@@ -17,16 +17,18 @@ Module 2 once per lap for all simulations.
 
 from __future__ import annotations
 
-import copy
 from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
 
-from tools.shared import (BASE_LAPTIME, COMPOUND_NAMES, DRS_WINDOW, FUEL_S_PER_LAP, NOISE_STD,
-                          PIT_COST_GREEN, PIT_COST_SC, encode_circuit, encode_compound,
-                          encode_team, lap_time_from_delta, load_models, model_features,
-                          predict_lap_deltas, predict_overtake_probability, LAP_FEATURES)
+from tools.shared import (BASE_LAPTIME, COMPOUND_NAMES, DEG_RANGE, DRS_WINDOW, FUEL_S_PER_LAP, NOISE_STD,
+                          PIT_COST_GREEN, PIT_COST_SC, circuit_deg_rate, circuit_deg_sd, degradation_prior,
+                          encode_circuit,
+                          encode_compound, encode_team, lap_time_from_delta, load_models, model_features,
+                          predict_lap_deltas, predict_overtake_probability, uses_deg_rate, LAP_FEATURES)
+
+DEG_MIN, DEG_MAX = DEG_RANGE
 
 START_GAP = 0.25          # s between consecutive grid slots after lap 1
 MIN_FOLLOW_GAP = 0.30     # s — can't cross the line closer than this behind a car you failed to pass
@@ -94,6 +96,7 @@ class Draws:
     dnf_u: np.ndarray        # (S, L, D)
     form: np.ndarray         # (S, D)
     start: np.ndarray        # (S, D)
+    deg_z: np.ndarray        # (S,)       how hard on tyres the day is, in race-to-race sd (V3.2)
 
 
 def draw(n_sims: int, n_laps: int, n_drivers: int, cfg: dict, seed: int) -> Draws:
@@ -108,24 +111,73 @@ def draw(n_sims: int, n_laps: int, n_drivers: int, cfg: dict, seed: int) -> Draw
         dnf_u=rng.random((S, L, D)),
         form=rng.normal(0, cfg.get("race_form_std", RACE_FORM_STD), (S, D)),
         start=rng.normal(0, START_STD, (S, D)),
+        deg_z=rng.normal(0, 1, S),               # drawn LAST: the other draws of a seed are unchanged
     )
 
 
 # ── Setup: everything that does not change during a race ─────────────────────
-def _delta_table(teams_enc: np.ndarray, n_laps: int, max_age: int, cfg: dict) -> np.ndarray:
+def _delta_table(teams_enc: np.ndarray, n_laps: int, max_age: int, cfg: dict, deg_rate=None) -> np.ndarray:
     """LapDelta for every (team, compound, tyre age, lap) → array [T, 3, max_age+1, n_laps+1]."""
     T = len(teams_enc)
-    t, c, a, l = np.meshgrid(np.arange(T), np.arange(3), np.arange(1, max_age + 1),
-                             np.arange(1, n_laps + 1), indexing="ij")
+    feats = model_features(load_models()[0], LAP_FEATURES)
+    by_team, by_lap = "TeamEncoded" in feats, "LapNumber" in feats
+    # V3+ models ignore the team and the lap number: predict the small grid once and repeat it
+    Tn, Ln = (T if by_team else 1), (n_laps if by_lap else 1)
+    t, c, a, l = np.meshgrid(np.arange(Tn), np.arange(3), np.arange(1, max_age + 1),
+                             np.arange(1, Ln + 1), indexing="ij")
     rows = pd.DataFrame({
         "CompoundEncoded": c.ravel(), "TyreLife": a.ravel(), "TeamEncoded": teams_enc[t.ravel()],
         "LapNumber": l.ravel(), "TrackTemp": cfg["track_temp"], "AirTemp": cfg["air_temp"],
         "RainfallEncoded": cfg.get("rainfall", 0),
         "CircuitEncoded": encode_circuit(cfg.get("circuit")),
     })
-    table = np.zeros((T, 3, max_age + 1, n_laps + 1))
-    table[t.ravel(), c.ravel(), a.ravel(), l.ravel()] = predict_lap_deltas(rows)
-    return table
+    small = np.zeros((Tn, 3, max_age + 1, Ln + 1))
+    small[t.ravel(), c.ravel(), a.ravel(), l.ravel()] = predict_lap_deltas(rows, deg_rate=deg_rate)
+    if not by_lap:
+        small = np.repeat(small[..., 1:2], n_laps + 1, axis=3)
+    if not by_team:
+        small = np.repeat(small, T, axis=0)
+    return small
+
+
+DEG_NODES = 9      # the day's degradation rate is one of 9 equally likely values (see degradation_setup)
+
+
+def degradation_setup(teams_enc: np.ndarray, n_laps: int, max_age: int, cfg: dict) -> dict:
+    """
+    The tyre model of one race (V3.2). The race's degradation rate γ is not known before the
+    race: at the same circuit it moves ±0.024 s/lap from one year to the next. So the engine
+    does not use one lap-delta table but DEG_NODES of them, at the centres of DEG_NODES equally
+    likely slices of N(γ, sd²), and each simulation uses the table of its own day
+    (Draws.deg_z → slice). It is the SAME day for every car in a simulation.
+    Why tables and not "table + z·sensitivity": every table is a real model prediction, so it
+    keeps the model's guarantees (monotone in tyre age); a linearised one does not.
+
+    cfg["deg_rate"]: γ for this race (default: the circuit's estimate; from a race in progress,
+    state_from_real_race passes the live estimate). cfg["deg_sd"]: its uncertainty (default:
+    race-to-race sd; 0 = γ is known).
+    """
+    if not uses_deg_rate():
+        return {"table": _delta_table(teams_enc, n_laps, max_age, cfg), "deg_rate": None, "deg_sd": 0.0,
+                "deg_tables": None, "deg_edges": None, "deg_nodes": None}
+    from scipy.stats import norm
+    rate = cfg.get("deg_rate")
+    rate = float(circuit_deg_rate(cfg.get("circuit")) if rate is None else rate)
+    sd = cfg.get("deg_sd")
+    sd = float(circuit_deg_sd(cfg.get("circuit")) if sd is None else sd)
+    table = _delta_table(teams_enc, n_laps, max_age, cfg, deg_rate=rate)
+    if sd <= 0:
+        return {"table": table, "deg_rate": rate, "deg_sd": 0.0, "deg_tables": None, "deg_edges": None,
+                "deg_nodes": None}
+    K = DEG_NODES
+    edges = norm.ppf(np.arange(1, K) / K)                               # K−1 cut points in z
+    cuts = np.concatenate([[-np.inf], edges, [np.inf]])
+    z = (norm.pdf(cuts[:-1]) - norm.pdf(cuts[1:])) * K                  # mean of z inside each slice
+    nodes = np.clip(rate + z * sd, DEG_MIN, DEG_MAX)
+    tables = np.stack([table if abs(g - rate) < 1e-12 else _delta_table(teams_enc, n_laps, max_age, cfg, deg_rate=g)
+                       for g in nodes])
+    return {"table": table, "deg_rate": rate, "deg_sd": sd, "deg_tables": tables, "deg_edges": edges,
+            "deg_nodes": nodes}
 
 
 def model_has_fuel() -> bool:
@@ -155,7 +207,7 @@ def build_setup(drivers, teams, pace, start_comp, start_age, plans, cfg: dict) -
         "start_comp": np.array([encode_compound(c) for c in start_comp]),
         "start_age": np.asarray(start_age, dtype=int),
         "stop_laps": stop_laps, "stop_comp": stop_comp, "max_age": max_age,
-        "table": _delta_table(np.array([encode_team(t) for t in uniq]), L, max_age, cfg),
+        **degradation_setup(np.array([encode_team(t) for t in uniq]), L, max_age, cfg),
         "fuel_in_model": model_has_fuel(),
     }
 
@@ -228,7 +280,12 @@ def step(state: dict, setup: dict, cfg: dict, dr: Draws, li: int) -> dict:
     new_comp = state["stop_comp"][sims, drv, k]
 
     # --- Lap times
-    delta = setup["table"][setup["team_idx"][None, :], comp, np.minimum(age, setup["max_age"]), lap]
+    cell = (setup["team_idx"][None, :], comp, np.minimum(age, setup["max_age"]), lap)
+    if setup.get("deg_tables") is not None:                            # today's tyres: this simulation's day
+        day = np.searchsorted(setup["deg_edges"], dr.deg_z)
+        delta = setup["deg_tables"][(day[:, None], *cell)]
+    else:
+        delta = setup["table"][cell]
     racing = lap_time_from_delta(delta, setup["pace"][None, :], base) + dr.form + dr.lap_noise[:, li]
     if not setup.get("fuel_in_model", True):           # V3 deltas are fuel-free: add it back (same for all)
         racing = racing + cfg.get("fuel_s_per_lap", FUEL_S_PER_LAP) * (L - lap)
@@ -517,6 +574,15 @@ def state_from_real_race(laps: pd.DataFrame, season: int, race: str, at_lap: int
         return (c if c in ("SOFT", "MEDIUM", "HARD") else "MEDIUM"), (int(a) if pd.notna(a) else 1)
     comp, age = map(list, zip(*[tyre_now(d) for d in drivers]))
 
+    # How hard on tyres is TODAY? The circuit's prior, updated with the laps run so far (V3.2).
+    # Early on the answer is the prior; after the first stops the race itself has most of the say.
+    deg_info = None
+    if cfg.get("deg_rate") is None:
+        deg_info = live_degradation(r[r["LapNumber"] <= at_lap], race)
+        if deg_info:
+            cfg["deg_rate"] = deg_info["mean"]
+            cfg.setdefault("deg_sd", deg_info["sd"])
+
     # pace known at lap N: fuel- and tyre-corrected median racing lap per driver
     hist = r[(r["LapNumber"] >= 2) & (r["LapNumber"] <= at_lap) & (r["TrackStatus"].astype(str) == "1")
              & r["PitInTime"].isna() & r["PitOutTime"].isna() & r["Compound"].isin(["SOFT", "MEDIUM", "HARD"])
@@ -527,7 +593,7 @@ def state_from_real_race(laps: pd.DataFrame, season: int, race: str, at_lap: int
                           "TrackTemp": cfg["track_temp"], "AirTemp": cfg["air_temp"], "RainfallEncoded": 0,
                           "CircuitEncoded": encode_circuit(race)})
     fuel_in_model = model_has_fuel()
-    corr = hist["LT"] - predict_lap_deltas(feats)
+    corr = hist["LT"] - predict_lap_deltas(feats, deg_rate=cfg.get("deg_rate"))
     if not fuel_in_model:
         corr = corr - cfg.get("fuel_s_per_lap", FUEL_S_PER_LAP) * (L - hist["LapNumber"])
     med = corr.groupby(hist["Driver"]).median()
@@ -578,8 +644,34 @@ def state_from_real_race(laps: pd.DataFrame, season: int, race: str, at_lap: int
         state["sc_left"] = np.array([2])
     info = {"season": season, "race": race, "at_lap": at_lap, "total_laps": L,
             "pace": dict(zip(drivers, np.round(pace, 4))), "base_laptime": base,
-            "rejoin_s": {d: round(v, 1) for d, v in rejoin.items()}}
+            "rejoin_s": {d: round(v, 1) for d, v in rejoin.items()}, "degradation": deg_info}
     return setup, cfg, state, info
+
+
+def live_degradation(laps_so_far: pd.DataFrame, race: str) -> dict | None:
+    """
+    This race's degradation rate γ given the laps completed so far: the circuit's prior updated
+    by tools.degradation.live_estimate → {mean, sd, n_laps, prior_mean, prior_sd}. None for models
+    older than V3.2 (no γ input).
+    """
+    if not uses_deg_rate():
+        return None
+    from tools import degradation
+    fuel = degradation_prior().get("fuel", {})
+    return degradation.live_estimate(laps_so_far, circuit_deg_rate(race), circuit_deg_sd(race),
+                                     fuel_mean=fuel.get("global", 0.055))
+
+
+def tyre_cost_table(cfg: dict, max_age: int, deg_rate: float | None = None) -> np.ndarray:
+    """
+    cum[c, a] = seconds lost over the first `a` laps of a new set of compound c (c: 0 SOFT,
+    1 MEDIUM, 2 HARD) at this race's degradation rate — the building block for comparing plans
+    on a clear track. (V3+ models: the same on every race lap; older ones are read at mid-race.)
+    """
+    rate = cfg.get("deg_rate") if deg_rate is None else deg_rate
+    L = int(cfg.get("total_laps", 50))
+    table = _delta_table(np.array([0]), L, max_age, cfg, deg_rate=rate)[0, :, :, max(L // 2, 1)]
+    return np.cumsum(table, axis=1)                       # age 0 holds 0 → cum[c, 0] = 0
 
 
 def actual_result(laps: pd.DataFrame, season: int, race: str) -> pd.Series:

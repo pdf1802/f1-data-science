@@ -40,12 +40,26 @@ START_COMPOUNDS = {
 
 
 def load_qualifying_results(year: int, gp: str, session=None) -> pd.DataFrame:
-    """Best lap per driver across Q1–Q3 → Driver | Team | QualyTime | QualyRank."""
+    """
+    Best lap per driver across Q1–Q3 → Driver | Team | QualyTime | QualyRank.
+    From FastF1 (your cache); if the session is not there, from the demo bundle (tools/demo_data.py).
+    """
     if session is None:
-        import fastf1
-        enable_fastf1_cache()
-        session = fastf1.get_session(year, gp, "Q")
-        session.load(laps=True, telemetry=False, weather=False, messages=False)
+        from tools import demo_data
+        if demo_data.forced() and (q := demo_data.qualifying(year, gp)) is not None:
+            return q
+        try:
+            import fastf1
+            enable_fastf1_cache()
+            session = fastf1.get_session(year, gp, "Q")
+            session.load(laps=True, telemetry=False, weather=False, messages=False)
+            if session.laps["LapTime"].notna().sum() == 0:
+                raise ValueError("no timed laps")
+        except Exception:
+            q = demo_data.qualifying(year, gp)
+            if q is None:
+                raise
+            return q
 
     laps = session.laps
     laps = laps[laps["LapTime"].notna()]
@@ -120,15 +134,18 @@ def classified_finishers(results: pd.DataFrame) -> pd.Series:
 
 def load_race_result(year: int, gp: str) -> pd.Series | None:
     """Classified finishing position per driver (None if the session can't be loaded)."""
+    from tools import demo_data
+    if demo_data.forced() and (res := demo_data.race_result(year, gp)) is not None:
+        return res
     try:
         import fastf1
         enable_fastf1_cache()
         s = fastf1.get_session(year, gp, "R")
         s.load(laps=False, telemetry=False, weather=False, messages=False)
         res = classified_finishers(s.results)
-        return res if len(res) else None
+        return res if len(res) else demo_data.race_result(year, gp)
     except Exception:
-        return None
+        return demo_data.race_result(year, gp)
 
 
 def compare_with_actual(pred: pd.DataFrame, actual: pd.Series) -> dict:

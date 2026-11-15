@@ -10,7 +10,8 @@ import pytest
 
 from tools import shared
 from tools.race_simulator import grid_from_qualifying, simulate, validate_grid, what_if
-from tools.stint_optimizer import compare_strategies, optimize_pit_lap
+from tools.stint_optimizer import (best_strategies, compare_strategies, optimize_pit_lap, real_stop_counts,
+                                   stop_count_outlook)
 from tools.undercut import WORST_CASE, DriverState, undercut_analysis
 
 CFG = {"track_temp": 35, "air_temp": 25, "rainfall": 0}
@@ -66,6 +67,60 @@ def test_compare_strategies_has_all_legal_pairs():
 def _pair():
     return (DriverState("VER", "Red Bull Racing", 3, "HARD", 20),
             DriverState("NOR", "McLaren", 2, "HARD", 20))
+
+
+# ── V3.2: degradation rate, number of stops ──────────────────────────────────
+def _rows(circuit, ages=(2, 22)):
+    return pd.DataFrame({"CompoundEncoded": 1, "TyreLife": list(ages), "TeamEncoded": 0, "LapNumber": 20,
+                         "TrackTemp": 35, "AirTemp": 25, "RainfallEncoded": 0,
+                         "CircuitEncoded": shared.encode_circuit(circuit)})
+
+
+def test_lap_deltas_follow_the_degradation_rate():
+    slope = lambda **kw: float(np.diff(shared.predict_lap_deltas(_rows("Italian Grand Prix"), **kw))[0]) / 20
+    assert shared.circuit_deg_rate("Bahrain Grand Prix") > shared.circuit_deg_rate("Italian Grand Prix")
+    assert slope(deg_rate=0.11) > slope() + 0.02                    # a harsher day than this circuit's usual
+    assert slope(deg_rate=shared.circuit_deg_rate("Italian Grand Prix")) == pytest.approx(slope())
+    # an unknown circuit is the average of the known ones, each at its own rate; still finite and rising
+    unknown = shared.predict_lap_deltas(_rows("Nowhere Grand Prix"))
+    assert np.isfinite(unknown).all() and unknown[1] > unknown[0]
+    assert shared.circuit_deg_sd("Nowhere Grand Prix") > shared.circuit_deg_sd("Bahrain Grand Prix")
+
+
+def test_best_strategies_agree_with_the_one_stop_sweep():
+    cfg = {**CFG, "circuit": "Italian Grand Prix"}
+    best = best_strategies(50, "Ferrari", cfg, pit_cost=22.0)
+    assert list(best["Stops"]) == [1, 2, 3] and best["Gap to best (s)"].min() == 0
+    one = compare_strategies(50, "Ferrari", cfg, pit_cost=22.0).iloc[0]
+    assert best.loc[0, "Total Δ (s)"] == pytest.approx(one["Total Δ (s)"], abs=0.02)
+    for _, row in best.iterrows():
+        laps = row["pit_laps"]
+        assert len(laps) == row["Stops"] and len(set(row["compounds"])) >= 2
+        assert all(b - a >= 5 for a, b in zip([0] + laps, laps + [50]))
+
+
+def test_more_degradation_favours_more_stops():
+    cfg = {**CFG, "circuit": "Italian Grand Prix"}
+    gap = lambda rate: (best_strategies(50, "Ferrari", cfg, 22.0, max_stops=2, deg_rate=rate)
+                        .set_index("Stops")["Total Δ (s)"].pipe(lambda t: t[2] - t[1]))
+    assert gap(0.15) < gap(0.03)                                    # two stops catch up when tyres die faster
+    o = stop_count_outlook(50, "Ferrari", cfg, 22.0, max_stops=2)
+    assert sum(o["p_best"].values()) == pytest.approx(1.0) and len(o["by_rate"]) == 9
+    assert o["by_rate"]["Degradation (s/lap)"].is_monotonic_increasing
+    assert o["deg_rate"] == pytest.approx(shared.circuit_deg_rate("Italian Grand Prix"))
+
+
+def test_real_stop_counts_ignore_red_flag_changes():
+    rows = []
+    for d, pits in (("AAA", {10: "1", 30: "1"}), ("BBB", {2: "15", 25: "4"}), ("CCC", {12: "1"})):
+        for lap in range(1, 41 if d != "CCC" else 20):                 # CCC retires on lap 19
+            rows.append({"Season": 2024, "Race": "X Grand Prix", "Driver": d, "LapNumber": lap, "TotalLaps": 40,
+                         "PitInTime": pd.Timedelta(seconds=lap) if lap in pits else pd.NaT,
+                         "TrackStatus": pits.get(lap, "1")})
+    out = real_stop_counts(pd.DataFrame(rows)).set_index("Driver")
+    assert list(out.index) == ["AAA", "BBB"]                           # finishers only
+    assert out.loc["AAA", "stops"] == 2 and out.loc["AAA", "sc_stops"] == 0
+    assert out.loc["BBB", "stops"] == 1 and out.loc["BBB", "sc_stops"] == 1     # red-flag change is free
 
 
 def test_undercut_is_deterministic():

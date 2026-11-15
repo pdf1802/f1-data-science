@@ -27,7 +27,6 @@ import time
 from datetime import datetime
 
 import joblib
-import numpy as np
 import pandas as pd
 
 from tools import shared, training
@@ -98,25 +97,42 @@ def main(argv=None):
     print(f"({physics.attrs['laps']:,} clean-air laps, {physics.attrs['races']} races)")
 
     # ── Module 1 ─────────────────────────────────────────────────────────────
-    _hr(f"4/6  Module 1 — lap-time model (fuel {args.fuel} s/lap, clean air > {training.CLEAN_AIR_GAP} s)")
-    lap_df, enc = training.build_lap_dataset(laps, fuel_s_per_lap=args.fuel, circuits=circuits)
-    print(f"Clean-air laps: {len(lap_df):,} from {lap_df['Group'].nunique()} races · features {training.LAP_MODEL_FEATURES}")
+    _hr("4/6  Module 1 — degradation per race, then the lap-time model")
+    fit = training.fit_lap_pipeline(laps, circuits, physics=physics)
+    prior, race_table = fit["prior"], fit["race_table"]
+    print(f"Degradation rate γ per race (driver fixed effects, bootstrap by driver): {len(race_table)} races")
+    print(f"  global {prior['global']:.3f} s/lap · between circuits ±{prior['circuit_sd']:.3f} · "
+          f"race to race at one circuit ±{prior['race_sd']:.3f}")
+    table = pd.DataFrame({"races": race_table.groupby("circuit").size(),
+                          "raw mean": race_table.groupby("circuit")["deg"].mean(),
+                          "shrunk": pd.Series(prior["circuits"])}).sort_values("shrunk")
+    print(table.round(3).to_string())
+    print(f"Fuel + track evolution per race: {prior['fuel']['global']:.3f} s/lap "
+          f"(range {min(prior['fuel']['races'].values()):.3f}–{max(prior['fuel']['races'].values()):.3f}); "
+          f"--fuel is only the default for a race with no estimate")
+    lap_df, enc, lap_model, tail = fit["lap_df"], fit["encoder"], fit["model"], fit["tail"]
+    print(f"\nClean-air laps: {len(lap_df):,} from {lap_df['Group'].nunique()} races · features {training.LAP_MODEL_FEATURES}")
     folds = min(args.folds, lap_df["Group"].nunique())
-    ev1 = training.evaluate_lap_model(lap_df, n_splits=folds) if folds >= 2 else None
+    ev1 = training.evaluate_lap_model(lap_df, n_splits=folds, physics=race_table) if folds >= 2 else None
     if ev1:
         gain = 1 - ev1["grouped_MAE"] / ev1["predict_median_MAE"]
-        print(f"\nMAE, GroupKFold by race : {ev1['grouped_MAE']:.3f} s   ← the honest number")
+        print(f"\nMAE, GroupKFold by race : {ev1['grouped_MAE']:.3f} s   ← the honest number "
+              f"(held-out races get their circuit's γ, not their own)")
         print(f"MAE, predict the median : {ev1['predict_median_MAE']:.3f} s   ← the bar to beat ({gain:+.1%})")
         print(f"MAE, random 80/20 split : {ev1['random_split_MAE']:.3f} s   ← optimistic (same-race leakage)")
-    lap_model = training.make_lap_model().fit(lap_df[training.LAP_MODEL_FEATURES], lap_df["LapDelta"])
-    tail = training.deg_tail(lap_df, physics)
     print(f"\nBeyond the data (age > {tail['cap']}) degradation continues linearly at "
-          f"{ {k: round(v, 3) for k, v in tail['slope'].items()} } s/lap (physics reference) — trees can't extrapolate.")
-    s1 = training.lap_model_sanity(lap_model, n_circuits=len(circuits), tail=tail)
-    print("\nPredicted LapDelta (s) by tyre age, averaged over circuits:")
+          f"{ {k: round(v, 3) for k, v in tail['slope'].items()} } s/lap × γ/{tail.get('ref_deg', 0):.3f} — trees can't extrapolate.")
+    circuit_deg = [prior["circuits"].get(shared.circuit_name(c), prior["global"]) for c in circuits]
+    deg_varies = bool(lap_df["DegRate"].std() > 0.005)       # nothing to respond to if every race is alike
+    s1 = training.lap_model_sanity(lap_model, n_circuits=len(circuits), tail=tail, circuit_deg=circuit_deg,
+                                   deg_sd=prior["race_sd"] or shared.DEFAULT_DEG_RACE_SD,
+                                   require_response=deg_varies)
+    print("\nPredicted LapDelta (s) by tyre age — each circuit at its own degradation rate, then averaged:")
     print(s1["curve"].loc[[2, 5, 10, 15, 20, 25, 30, 35, 40]].round(2).to_string())
     for name, ok in s1["checks"].items():
         print(f"  {'✅' if ok else '❌'} {name}")
+    if s1.get("deg_response") is not None:
+        print(f"     response to γ: {s1['deg_response']:.0%} of nominal (100 % = follows the measured rate exactly)")
     beats_median = bool(ev1 and ev1["grouped_MAE"] < ev1["predict_median_MAE"])
     if ev1:
         print(f"  {'✅' if beats_median else '❌'} beats 'predict the median' on unseen races")
@@ -155,8 +171,8 @@ def main(argv=None):
     print("✅ All checks passed" if passed else "⚠️  Saving despite a failed check (--force)")
 
     os.makedirs(args.out, exist_ok=True)
-    existing = [f for f in shared.REQUIRED_MODEL_FILES + ("compound_map.json", "circuits.json",
-                                                          "deg_tail.json", "training_report.json")
+    existing = [f for f in shared.REQUIRED_MODEL_FILES + ("compound_map.json", "circuits.json", "deg_tail.json",
+                                                          "degradation.json", "training_report.json")
                 if os.path.isfile(os.path.join(args.out, f))]
     if existing:
         bk = os.path.join(args.out, f"backup_{datetime.now():%Y%m%d_%H%M%S}")
@@ -173,9 +189,12 @@ def main(argv=None):
         json.dump(circuits, f, indent=1)
     with open(os.path.join(args.out, "deg_tail.json"), "w") as f:
         json.dump(tail, f, indent=1)
+    with open(os.path.join(args.out, "degradation.json"), "w") as f:
+        json.dump({**prior, "race_table": race_table.round(5).reset_index().to_dict(orient="records")}, f, indent=1)
     report = {
         "trained_at": datetime.now().isoformat(timespec="seconds"),
-        "version": "V3.1", "source": source, "fuel_s_per_lap": args.fuel,
+        "version": "V3.2", "source": source, "fuel_s_per_lap": prior["fuel"]["global"],
+        "degradation": {k: prior[k] for k in ("global", "circuit_sd", "race_sd", "circuits", "n_races")},
         "clean_air_gap_s": training.CLEAN_AIR_GAP,
         "races_used": int(lap_df["Group"].nunique()), "wet_races_excluded": wet,
         "failed_sessions": failed, "circuits": circuits,
@@ -183,7 +202,7 @@ def main(argv=None):
         "deg_tail": tail,
         "module1": {"features": training.LAP_MODEL_FEATURES, "n_laps": len(lap_df),
                     **({k: v for k, v in ev1.items() if k != "folds"} if ev1 else {}),
-                    "sanity": s1["checks"],
+                    "sanity": s1["checks"], "deg_response": s1.get("deg_response"),
                     "curve": s1["curve"].loc[[2, 10, 20, 30]].round(3).to_dict()},
         "module2": {"features": training.OVT_MODEL_FEATURES, "n_rows": len(ovt_df),
                     **({k: v for k, v in ev2.items() if k != "calibration"} if ev2 else {}),
@@ -192,7 +211,7 @@ def main(argv=None):
     }
     with open(os.path.join(args.out, "training_report.json"), "w") as f:
         json.dump(report, f, indent=2, default=str)
-    print(f"Saved models + circuits.json + training_report.json to {args.out}  ({time.time() - t0:.0f} s)")
+    print(f"Saved models + circuits.json + degradation.json + training_report.json to {args.out}  ({time.time() - t0:.0f} s)")
     print("Restart the dashboard (Ctrl+C, then streamlit run app.py) to load them.")
     return 0
 

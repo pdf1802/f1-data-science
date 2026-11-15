@@ -196,10 +196,30 @@ def test_headline_only_calls_an_option_that_clearly_beats_staying_out():
     assert re_.make_headline(_table([base]))[1].startswith("STAY OUT")
 
 
-def test_default_plan():
-    assert re_.default_plan("SOFT", 18, {"SOFT"}, 20, 57) == [(21, "HARD")]      # at the edge of the data
-    assert re_.default_plan("HARD", 5, {"SOFT"}, 40, 57) == []                     # reaches the flag, rule met
-    assert re_.default_plan("HARD", 5, {"HARD"}, 50, 57) == [(54, "MEDIUM")]       # rule not met yet
+def _cum(rate=(0.08, 0.05, 0.03), offset=(0.0, 0.3, 0.6), ages=120):
+    """Synthetic tyre-cost table: lap delta = offset + rate × age (SOFT, MEDIUM, HARD)."""
+    a = np.arange(ages + 1)
+    return np.cumsum(np.array([o + r * a for o, r in zip(offset, rate)]) * (a > 0), axis=1)
+
+
+def test_optimal_plan_keeps_the_two_compound_rule_and_reaches_the_flag():
+    cum = _cum()
+    assert re_.optimal_plan("HARD", 5, {"SOFT"}, 40, 57, cum, 22.0) == []          # rule met, tyres fine
+    plan = re_.optimal_plan("HARD", 5, {"HARD"}, 40, 57, cum, 22.0)                # rule not met → must stop
+    assert len(plan) == 1 and plan[0][1] != "HARD" and 40 < plan[0][0] < 57
+    late = re_.optimal_plan("HARD", 5, {"HARD"}, 54, 57, cum, 22.0)                # no room for a real stint
+    assert late == [(56, "MEDIUM")]
+    assert re_.optimal_plan("HARD", 5, {"SOFT"}, 57, 57, cum, 22.0) == []          # race over
+
+
+def test_optimal_plan_stops_more_when_tyres_degrade_more():
+    gentle, harsh = _cum(rate=(0.03, 0.02, 0.01)), _cum(rate=(0.30, 0.22, 0.16))
+    stops = lambda cum: len(re_.optimal_plan("MEDIUM", 1, set(), 0, 57, cum, 22.0))
+    assert stops(gentle) == 1 and stops(harsh) == 2
+    # and every extra stop has to pay for itself: with a huge pit loss, one stop again
+    assert len(re_.optimal_plan("MEDIUM", 1, set(), 0, 57, harsh, 90.0)) == 1
+    plan = re_.optimal_plan("MEDIUM", 1, set(), 0, 57, harsh, 22.0)
+    assert plan[1][0] - plan[0][0] >= re_.MIN_STINT and plan[1][0] <= 57 - re_.MIN_STINT
 
 
 # ── found by the independent review ──────────────────────────────────────────

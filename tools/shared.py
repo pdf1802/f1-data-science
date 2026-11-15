@@ -55,7 +55,10 @@ REQUIRED_MODEL_FILES = ("lap_time_model.pkl", "overtaking_model.pkl", "team_enco
 
 def resolve_model_dir() -> str:
     """Return the first directory that actually contains the model files."""
-    candidates = [os.environ.get("F1_MODEL_DIR"), _LOCAL_MODEL_DIR, _COLAB_MODEL_DIR]
+    demo = os.path.join(os.environ.get("F1_DEMO_DIR", os.path.join(REPO_ROOT, "demo")), "models")
+    candidates = [os.environ.get("F1_MODEL_DIR"), _LOCAL_MODEL_DIR, _COLAB_MODEL_DIR, demo]
+    if os.environ.get("F1_DEMO", "") == "1":            # the public demo: the bundled models first
+        candidates = [os.environ.get("F1_MODEL_DIR"), demo, _LOCAL_MODEL_DIR, _COLAB_MODEL_DIR]
     for path in candidates:
         if path and os.path.isfile(os.path.join(path, "lap_time_model.pkl")):
             return os.path.abspath(path)
@@ -65,6 +68,18 @@ def resolve_model_dir() -> str:
         + "\nRun the module notebooks (they save the .pkl files) and copy them "
         "into models/, or set the F1_MODEL_DIR environment variable."
     )
+
+
+def laps_path() -> str | None:
+    """
+    The race-lap Parquet: $F1_LAPS, then data/laps_2022_2025.parquet (python -m tools.export_cache),
+    then the demo bundle (demo/laps.parquet). None if there is none.
+    """
+    demo = os.path.join(os.environ.get("F1_DEMO_DIR", os.path.join(REPO_ROOT, "demo")), "laps.parquet")
+    own = os.path.join(REPO_ROOT, "data", "laps_2022_2025.parquet")
+    order = [os.environ.get("F1_LAPS"), demo, own] if os.environ.get("F1_DEMO", "") == "1" else \
+        [os.environ.get("F1_LAPS"), own, demo]
+    return next((p for p in order if p and os.path.isfile(p)), None)
 
 
 def models_available() -> bool:
@@ -172,6 +187,10 @@ _OVT_MODEL = None
 _TEAM_ENCODER = None
 _CIRCUITS: list[str] = []      # V3: circuits the models were trained on (circuits.json)
 _DEG_TAIL: dict = {}           # V3.1: linear degradation beyond the data (deg_tail.json)
+_DEGRADATION: dict = {}        # V3.2: degradation rate per circuit + its uncertainty (degradation.json)
+DEFAULT_DEG_RATE = 0.058       # s/lap — used when there is no degradation.json (older models)
+DEFAULT_DEG_RACE_SD = 0.024    # s/lap — race-to-race spread of the degradation rate at one circuit
+DEG_RANGE = (0.01, 0.17)       # s/lap — the range seen in training; estimates and draws are clipped to it
 
 
 def load_models():
@@ -180,7 +199,7 @@ def load_models():
 
     Returns (lap_model, ovt_model, team_encoder).
     """
-    global _LAP_MODEL, _OVT_MODEL, _TEAM_ENCODER, _CIRCUITS, _DEG_TAIL
+    global _LAP_MODEL, _OVT_MODEL, _TEAM_ENCODER, _CIRCUITS, _DEG_TAIL, _DEGRADATION
     if _LAP_MODEL is None:
         model_dir = resolve_model_dir()
         _LAP_MODEL = joblib.load(os.path.join(model_dir, "lap_time_model.pkl"))
@@ -200,15 +219,20 @@ def load_models():
         if os.path.isfile(tail_path):
             with open(tail_path) as f:
                 _DEG_TAIL = json.load(f)
+        deg_path = os.path.join(model_dir, "degradation.json")
+        if os.path.isfile(deg_path):
+            with open(deg_path) as f:
+                _DEGRADATION = json.load(f)
     return _LAP_MODEL, _OVT_MODEL, _TEAM_ENCODER
 
 
 def reset_models() -> None:
     """Forget cached models (used by tests to swap in stand-in models)."""
-    global _LAP_MODEL, _OVT_MODEL, _TEAM_ENCODER, _CIRCUITS, _DEG_TAIL
+    global _LAP_MODEL, _OVT_MODEL, _TEAM_ENCODER, _CIRCUITS, _DEG_TAIL, _DEGRADATION
     _LAP_MODEL = _OVT_MODEL = _TEAM_ENCODER = None
     _CIRCUITS = []
     _DEG_TAIL = {}
+    _DEGRADATION = {}
 
 
 # ── Circuits ─────────────────────────────────────────────────────────────────
@@ -239,6 +263,59 @@ def encode_circuit(event: str | None) -> float:
         if c.lower() == name.lower():
             return float(i)
     return np.nan
+
+
+# ── Degradation rate (V3.2, see tools/degradation.py) ────────────────────────
+def degradation_prior() -> dict:
+    """The saved degradation model (global, circuit_sd, race_sd, circuits…); {} for older models."""
+    load_models()
+    return _DEGRADATION
+
+
+def circuit_deg_rate(event: str | None) -> float:
+    """
+    Expected degradation rate γ (s per lap of tyre age) of a race at this circuit, before it
+    starts: the circuit's estimate shrunk to the global mean; the global mean for a circuit the
+    models have not seen.
+    """
+    prior = degradation_prior()
+    return float(prior.get("circuits", {}).get(circuit_name(event), prior.get("global", DEFAULT_DEG_RATE)))
+
+
+def circuit_deg_sd(event: str | None) -> float:
+    """
+    1-sd uncertainty of a race's γ before it starts: the race-to-race spread at a known circuit;
+    wider (plus the spread between circuits) at a circuit the models have not seen.
+    """
+    prior = degradation_prior()
+    sd = float(prior.get("race_sd", DEFAULT_DEG_RACE_SD))
+    if circuit_name(event) in prior.get("circuits", {}):
+        return sd
+    return float(np.hypot(sd, prior.get("circuit_sd", DEFAULT_DEG_RACE_SD)))
+
+
+def deg_race_sd() -> float:
+    """How much γ varies from race to race at the same circuit (1 sd) — the pre-race uncertainty."""
+    return float(degradation_prior().get("race_sd", DEFAULT_DEG_RACE_SD))
+
+
+def uses_deg_rate() -> bool:
+    """True when the loaded lap model takes the degradation rate as an input (V3.2+)."""
+    return "DegRate" in model_features(load_models()[0], LAP_FEATURES)
+
+
+def _with_deg_rate(df: pd.DataFrame, deg_rate=None) -> pd.DataFrame:
+    """Add DegRate: the caller's value, else the row's own column, else its circuit's estimate."""
+    df = df.copy()
+    if deg_rate is not None:
+        df["DegRate"] = deg_rate
+    elif "DegRate" not in df:
+        prior = degradation_prior()
+        by_code = {float(i): prior.get("circuits", {}).get(c) for i, c in enumerate(_CIRCUITS)}
+        codes = df["CircuitEncoded"] if "CircuitEncoded" in df else pd.Series(np.nan, index=df.index)
+        df["DegRate"] = codes.map(by_code).astype(float).fillna(prior.get("global", DEFAULT_DEG_RATE))
+    df["DegRate"] = df["DegRate"].astype(float)
+    return df
 
 
 def _predict_marginal(feats: list[str], df: pd.DataFrame, predict) -> np.ndarray:
@@ -288,7 +365,7 @@ def encode_team(team_name: str) -> int:
         if low in k.lower() or k.lower() in low:
             return int(enc.transform([k])[0])
     midfield = known[len(known) // 2]
-    warnings.warn(f"Unknown team '{team_name}' — encoding as '{midfield}'")
+    warnings.warn(f"Unknown team '{team_name}' — encoding as '{midfield}'", stacklevel=2)
     return int(enc.transform([midfield])[0])
 
 
@@ -303,18 +380,48 @@ def encode_compound(compound) -> int:
 
 
 # ── Core prediction functions ────────────────────────────────────────────────
-def predict_lap_deltas(features: pd.DataFrame | Iterable[dict]) -> np.ndarray:
+def predict_lap_deltas(features: pd.DataFrame | Iterable[dict], deg_rate=None) -> np.ndarray:
     """
     Vectorised Module 1 call: one row per (driver, lap) → LapDelta seconds.
 
     Always call this with *all* the rows you need at once. One predict() on
     3,000 rows costs about the same as one predict() on 1 row — the overhead
     is per call, not per row.
+
+    deg_rate (V3.2): the race's degradation rate γ in s/lap (a number or one per row). Default:
+    the `DegRate` column if the rows have one, else each row's circuit estimate
+    (circuit_deg_rate). Pass it to ask "what if today degrades more?" or to use a live estimate.
+
+    Rows with an unknown circuit are averaged over the known circuits — each one at ITS OWN
+    degradation rate (shifted by how far the requested rate is from the global mean). Averaging
+    all circuits at one common rate would ask the model for races that never happened.
     """
     lap_model, _, _ = load_models()
     df = pd.DataFrame(features)
-    predict = lambda d: _predict_marginal(model_features(lap_model, LAP_FEATURES), d, lap_model.predict)
-    return apply_deg_tail(df, predict, _DEG_TAIL)
+    feats = model_features(lap_model, LAP_FEATURES)
+    if "DegRate" not in feats:                                   # V3.1 and older models
+        predict = lambda d: _predict_marginal(feats, d, lap_model.predict)
+        return apply_deg_tail(df, predict, _DEG_TAIL)
+
+    df = _with_deg_rate(df.reset_index(drop=True), deg_rate)
+    if "CircuitEncoded" not in df:
+        df["CircuitEncoded"] = np.nan
+    direct = lambda d: lap_model.predict(d[feats].astype(float))
+    known = df["CircuitEncoded"].notna().to_numpy()
+    if not _CIRCUITS:                                            # a model with no circuit list
+        return apply_deg_tail(df.assign(CircuitEncoded=df["CircuitEncoded"].fillna(0.0)), direct, _DEG_TAIL)
+    out = np.empty(len(df))
+    if known.any():
+        out[known] = apply_deg_tail(df[known], direct, _DEG_TAIL)
+    if (~known).any():
+        prior = degradation_prior()
+        g = prior.get("global", DEFAULT_DEG_RATE)
+        sub = df[~known]
+        rep = pd.concat([sub.assign(CircuitEncoded=float(i),
+                                    DegRate=(sub["DegRate"] - g + prior.get("circuits", {}).get(c, g)).clip(lower=0.0))
+                         for i, c in enumerate(_CIRCUITS)], ignore_index=True)
+        out[~known] = apply_deg_tail(rep, direct, _DEG_TAIL).reshape(len(_CIRCUITS), len(sub)).mean(0)
+    return out
 
 
 def apply_deg_tail(df: pd.DataFrame, predict, tail: dict) -> np.ndarray:
@@ -327,20 +434,28 @@ def apply_deg_tail(df: pd.DataFrame, predict, tail: dict) -> np.ndarray:
     at the cap and continue with the linear degradation slope measured by the
     fixed-effects reference model (training.estimate_tyre_physics).
     """
+    df = df.copy()
+    if "DegRate" in df:                                    # Wear = γ × tyre age (V3.2 feature)
+        df["Wear"] = df["DegRate"].to_numpy(dtype=float) * df["TyreLife"].to_numpy(dtype=float)
     if not tail:
         return np.asarray(predict(df))
-    df = df.copy()
     extra = np.zeros(len(df))
     comp = df["CompoundEncoded"].to_numpy(dtype=float)
     age = df["TyreLife"].to_numpy(dtype=float)
+    # V3.2: the tail slope follows the race's degradation rate (a Bahrain tail is steeper)
+    scale = np.ones(len(df))
+    if "DegRate" in df and tail.get("ref_deg"):
+        scale = df["DegRate"].to_numpy(dtype=float) / float(tail["ref_deg"])
     for name, code in COMPOUND_MAP.items():
         cap, slope = tail["cap"].get(name), tail["slope"].get(name)
         if cap is None or slope is None:
             continue
         over = (comp == code) & (age > cap)
-        extra[over] = slope * (age[over] - cap)
+        extra[over] = slope * scale[over] * (age[over] - cap)
         age[over] = cap
     df["TyreLife"] = age
+    if "DegRate" in df:
+        df["Wear"] = df["DegRate"].to_numpy(dtype=float) * age        # after the cap: what the trees saw
     return np.asarray(predict(df)) + extra
 
 

@@ -99,7 +99,7 @@ def test_take_control_is_deterministic(laps):
 def test_boxing_mid_lap_equals_having_planned_it(laps):
     """A box command re-runs the current lap with the same draws: same as if planned from the start."""
     a = TakeControlFeed(laps, 2099, RACE, N, seed=2)
-    assert a.live.plan("D06") == [(16, "HARD")]                    # default plan: stop on lap 16
+    a.live.set_plan("D06", [(20, "HARD")])                         # a later stop is planned
     a.payload(line(a, "D06", N) + 400)                             # engine has run ahead
     t = line(a, "D06", N + 2) + 20                                 # 20 s into lap 15
     prog = a._progress("D06", t)

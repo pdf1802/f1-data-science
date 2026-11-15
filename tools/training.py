@@ -59,6 +59,22 @@ V3 fixes, Module 2
     6. (V3.1) Circuit as a feature: overtaking is ~10× harder at Monaco than
        at Spa. Log loss 0.095 → 0.090, PR-AUC 0.52 → 0.57 on unseen races.
 
+V3.2 — per-circuit degradation was compressed (Nov 2026)
+    The trees had the circuit as a feature but implied 0.034–0.069 s/lap of
+    degradation across circuits where the data says 0.025–0.127: an interaction
+    (circuit × tyre age) that shallow, regularised trees flatten. Every strategy
+    tool inherited a one-stop bias (Bahrain, a two-stop race, came out as one stop).
+   12. Degradation is modelled in two levels (tools/degradation.py): a random-effects
+       model of each race's degradation rate γ (race within circuit), and this model,
+       which is HANDED γ as a feature (DegRate) together with Wear = γ × tyre age —
+       the interaction, spelled out. Trained with each race's measured γ; at
+       prediction time γ is the circuit's shrunk estimate (or the live estimate).
+   13. Fuel burn + track evolution is measured PER RACE (0.03–0.065 s/lap, shrunk)
+       instead of 0.055 everywhere: an error there leaks straight into the
+       degradation the model sees.
+   14. The honest evaluation gives a held-out race the γ of its circuit estimated
+       WITHOUT that race — not its own.
+
 Run everything with:
     python -m tools.train_models
 """
@@ -75,10 +91,12 @@ from tools.shared import (COMPOUND_MAP, FUEL_S_PER_LAP, LAP_FEATURES, OVT_FEATUR
 # (small) and it is a near-perfect PROXY for the compound (softs early, hards
 # late). TeamEncoded / temperatures are out too (V3.1, see above). The tools
 # keep passing every LAP_FEATURES column; predictions use the model's own list.
-LAP_MODEL_FEATURES = ["CompoundEncoded", "TyreLife", "CircuitEncoded"]
+LAP_MODEL_FEATURES = ["CompoundEncoded", "TyreLife", "CircuitEncoded", "DegRate", "Wear"]
+MONOTONE_UP = ("TyreLife", "Wear")      # an older tyre is never faster; nor is more accumulated wear
 OVT_MODEL_FEATURES = OVT_FEATURES + ["CircuitEncoded"]
 
 CLEAN_AIR_GAP = 2.0          # s to the car ahead at the start of the lap
+DEFAULT_DEG_RATE = 0.058     # s/lap — global degradation rate, for races with no measured one
 WET_MAX_SHARE = 0.05         # a race is "wet" above 5 % wet-tyre laps or 5 % rain laps
 HARD_VS_MEDIUM_TOL = 0.15    # s — HARD may not look faster than MEDIUM by more than this
 
@@ -190,13 +208,18 @@ def add_gap_ahead(laps: pd.DataFrame) -> pd.DataFrame:
 
 
 # ── Module 1 ─────────────────────────────────────────────────────────────────
-def build_lap_dataset(laps: pd.DataFrame, fuel_s_per_lap: float = FUEL_S_PER_LAP,
+def build_lap_dataset(laps: pd.DataFrame, fuel_s_per_lap=FUEL_S_PER_LAP,
                       max_delta: float = 5.0, clean_air_gap: float | None = CLEAN_AIR_GAP,
-                      circuits: list[str] | None = None):
+                      circuits: list[str] | None = None, deg_rates: dict | None = None):
     """
     Clean green-flag racing laps → (features + LapDelta, fitted team encoder).
     LapDelta = fuel-corrected lap time − the driver's best fuel-corrected lap in that race.
     df.attrs["circuits"] holds the circuit vocabulary used for CircuitEncoded.
+
+    fuel_s_per_lap: one number for every race, or a mapping {"2023 Bahrain Grand Prix": s/lap}
+    (V3.2: fuel burn + track evolution is measured per race, see degradation.race_physics).
+    deg_rates: {"2023 Bahrain Grand Prix": γ, "_default": γ} — each race's degradation rate
+    (degradation.fit_prior(...)["races"]); adds the DegRate and Wear = DegRate × TyreLife features.
     """
     from sklearn.preprocessing import LabelEncoder
 
@@ -218,6 +241,10 @@ def build_lap_dataset(laps: pd.DataFrame, fuel_s_per_lap: float = FUEL_S_PER_LAP
     d = d[keep].copy()
 
     fuel_laps_left = d["TotalLaps"] - d["LapNumber"]
+    if not np.isscalar(fuel_s_per_lap):                    # per race, default for races not listed
+        per_race = dict(fuel_s_per_lap)
+        group = d["Season"].astype(str) + " " + d["Race"].astype(str)
+        fuel_s_per_lap = group.map(per_race).fillna(per_race.get("_default", FUEL_S_PER_LAP)).astype(float)
     d["FuelCorrected"] = d["LapTimeSeconds"] - fuel_s_per_lap * fuel_laps_left
     best = d.groupby(["Season", "Race", "Driver"])["FuelCorrected"].transform("min")
     d["LapDelta"] = d["FuelCorrected"] - best
@@ -232,7 +259,10 @@ def build_lap_dataset(laps: pd.DataFrame, fuel_s_per_lap: float = FUEL_S_PER_LAP
     d["TrackTemp"] = d["TrackTemp"].fillna(d["TrackTemp"].median())
     d["AirTemp"] = d["AirTemp"].fillna(d["AirTemp"].median())
     d["Group"] = d["Season"].astype(str) + " " + d["Race"].astype(str)
-    cols = LAP_FEATURES + ["LapDelta", "Group", "Season", "Race", "Driver", "Team"]
+    rates = dict(deg_rates or {})
+    d["DegRate"] = d["Group"].map(rates).fillna(rates.get("_default", DEFAULT_DEG_RATE)).astype(float)
+    d["Wear"] = d["DegRate"] * d["TyreLife"]
+    cols = LAP_FEATURES + ["DegRate", "Wear", "LapDelta", "Group", "Season", "Race", "Driver", "Team"]
     out = d[cols].reset_index(drop=True)
     out.attrs["circuits"] = list(circuits)
     return out, enc
@@ -241,7 +271,7 @@ def build_lap_dataset(laps: pd.DataFrame, fuel_s_per_lap: float = FUEL_S_PER_LAP
 def make_lap_model(**kw):
     from xgboost import XGBRegressor
     feats = kw.pop("features", LAP_MODEL_FEATURES)
-    mono = tuple(1 if f == "TyreLife" else 0 for f in feats)
+    mono = tuple(1 if f in MONOTONE_UP else 0 for f in feats)
     params = dict(n_estimators=300, learning_rate=0.05, max_depth=4, min_child_weight=20,
                   subsample=0.8, colsample_bytree=0.9, monotone_constraints=mono,
                   random_state=42, n_jobs=-1)
@@ -250,18 +280,32 @@ def make_lap_model(**kw):
 
 
 def evaluate_lap_model(df: pd.DataFrame, n_splits: int = 5, make=make_lap_model,
-                       features=LAP_MODEL_FEATURES) -> dict:
+                       features=LAP_MODEL_FEATURES, physics: pd.DataFrame | None = None) -> dict:
     """
     GroupKFold by race (honest) vs a random split (leaky), MAE in seconds.
     The baseline is "predict the median" fitted on the TRAINING folds only.
+
+    physics (degradation.race_physics table): with it, a held-out race gets the degradation
+    rate of its circuit estimated from the TRAINING races only — what would be known before
+    the race — instead of its own measured rate, which would leak the answer.
     """
     from sklearn.metrics import mean_absolute_error
     from sklearn.model_selection import GroupKFold, train_test_split
 
+    from tools.degradation import fit_prior
+
     X, y, g = df[features].astype(float), df["LapDelta"], df["Group"]
+    circuit = df["Race"].astype(str).map(circuit_name)
     pred, base, folds = np.zeros(len(df)), np.zeros(len(df)), []
     for k, (tr, te) in enumerate(GroupKFold(n_splits=n_splits).split(X, y, g)):
-        pred[te] = make().fit(X.iloc[tr], y.iloc[tr]).predict(X.iloc[te])
+        Xtr, Xte = X.iloc[tr], X.iloc[te]
+        if physics is not None and "DegRate" in features:
+            prior = fit_prior(physics[physics.index.isin(set(g.iloc[tr]))])
+            rate_tr = g.iloc[tr].map(prior["races"]).fillna(circuit.iloc[tr].map(prior["circuits"])).fillna(prior["global"])
+            rate_te = circuit.iloc[te].map(prior["circuits"]).fillna(prior["global"])
+            Xtr = Xtr.assign(DegRate=rate_tr.to_numpy(), Wear=rate_tr.to_numpy() * Xtr["TyreLife"].to_numpy())[features]
+            Xte = Xte.assign(DegRate=rate_te.to_numpy(), Wear=rate_te.to_numpy() * Xte["TyreLife"].to_numpy())[features]
+        pred[te] = make().fit(Xtr, y.iloc[tr]).predict(Xte)
         base[te] = y.iloc[tr].median()
         folds.append({"fold": k, "test_races": int(g.iloc[te].nunique()),
                       "MAE": mean_absolute_error(y.iloc[te], pred[te]),
@@ -286,18 +330,47 @@ def _marginal_predict(model, grid: pd.DataFrame, feats, n_circuits, predict):
     return grid.assign(P=predict(grid[feats].astype(float)))
 
 
-def deg_tail(lap_df: pd.DataFrame, physics: pd.DataFrame, quantile: float = 0.9) -> dict:
-    """Per-compound age cap (where the data thins out) + linear slope from the physics reference."""
+def deg_tail(lap_df: pd.DataFrame, physics: pd.DataFrame, quantile: float = 0.9,
+             ref_deg: float | None = None) -> dict:
+    """
+    Per-compound age cap (where the data thins out) + linear slope from the physics reference.
+    ref_deg (V3.2): the global degradation rate those slopes correspond to — at prediction time
+    the tail slope is scaled by DegRate / ref_deg, so a high-degradation race keeps degrading faster.
+    """
     caps = lap_df.groupby("CompoundEncoded")["TyreLife"].quantile(quantile)
     names = {v: k for k, v in COMPOUND_MAP.items()}
-    return {"cap": {names[int(c)]: int(round(v)) for c, v in caps.items()},
-            "slope": {c: float(physics.loc[f"deg_{c}_per_lap", "estimate"]) for c in COMPOUND_MAP},
-            "quantile": quantile}
+    out = {"cap": {names[int(c)]: int(round(v)) for c, v in caps.items()},
+           "slope": {c: float(physics.loc[f"deg_{c}_per_lap", "estimate"]) for c in COMPOUND_MAP},
+           "quantile": quantile}
+    if ref_deg:
+        out["ref_deg"] = float(ref_deg)
+    return out
+
+
+def fit_lap_pipeline(dry: pd.DataFrame, circuits: list[str], n_boot: int = 200,
+                     physics: pd.DataFrame | None = None, race_table: pd.DataFrame | None = None) -> dict:
+    """
+    Everything Module 1 needs, in order (used by train_models and by the leave-one-race-out
+    backtest, so both run the same pipeline):
+        race physics → degradation prior → dataset (per-race fuel, DegRate) → model → tail.
+    """
+    from tools import degradation
+    if race_table is None:                       # each race is fitted on its own laps only, so a table
+        race_table = degradation.race_physics(dry, n_boot=n_boot)    # computed once can be reused minus a race
+    prior = degradation.fit_prior(race_table)
+    physics = estimate_tyre_physics(dry) if physics is None else physics
+    lap_df, enc = build_lap_dataset(dry, fuel_s_per_lap=degradation.fuel_map(prior), circuits=circuits,
+                                    deg_rates={**prior["races"], "_default": prior["global"]})
+    model = make_lap_model().fit(lap_df[LAP_MODEL_FEATURES], lap_df["LapDelta"])
+    tail = deg_tail(lap_df, physics, ref_deg=prior["global"])
+    return {"model": model, "encoder": enc, "lap_df": lap_df, "tail": tail, "prior": prior,
+            "race_table": race_table, "physics": physics}
 
 
 def lap_model_sanity(model, teams_encoded=(0,), n_circuits: int | None = None,
                      track_temp: float = 35.0, air_temp: float = 25.0, lap_number: int = 30,
-                     tail: dict | None = None) -> dict:
+                     tail: dict | None = None, deg_rate: float = DEFAULT_DEG_RATE,
+                     circuit_deg=None, deg_sd: float = 0.024, require_response: bool = True) -> dict:
     """
     Physics gate, averaged over teams and circuits so one odd value can't pass/fail it.
     What the data supports (see estimate_tyre_physics):
@@ -307,17 +380,38 @@ def lap_model_sanity(model, teams_encoded=(0,), n_circuits: int | None = None,
       4. a fresh HARD is not more than HARD_VS_MEDIUM_TOL s faster than a fresh MEDIUM
          (the data cannot rank MEDIUM vs HARD when fresh — but it can rule out
          a clearly faster HARD, which is what V2 claimed)
+      5. (V3.2) the model RESPONDS to the degradation rate: one race-to-race standard deviation
+         up or down from a circuit's own rate moves the implied degradation of MEDIUM and HARD
+         by at least half of that change. V3.1 could not respond at all (no such input).
+         `require_response=False` reports it without gating — for training data where every
+         race has the same rate (nothing to learn a response from).
+
+    The model is tested AS IT IS SERVED (V3.2): `circuit_deg` is each circuit's own degradation
+    rate, in encoder order, and every circuit is drawn at its own rate before averaging. Drawing
+    all circuits at one global rate asks for combinations that never happened (a fresh SOFT at a
+    low-degradation Bahrain) and the answer there is extrapolation, not physics. Without
+    `circuit_deg` every circuit uses `deg_rate`.
     """
     feats = _features_of(model, LAP_MODEL_FEATURES)
-    grid = pd.DataFrame([{"CompoundEncoded": c, "TyreLife": a, "TeamEncoded": t, "LapNumber": lap_number,
-                          "TrackTemp": track_temp, "AirTemp": air_temp, "RainfallEncoded": 0,
-                          "CircuitEncoded": 0.0, "Age": a, "C": c}
-                         for t in teams_encoded for c in range(3) for a in range(2, 41)])
     from tools.shared import apply_deg_tail
-    grid = _marginal_predict(model, grid, feats, n_circuits or 1,
-                             lambda X: apply_deg_tail(X, model.predict, tail or {}))
-    curve = grid.groupby(["C", "Age"])["P"].mean().unstack(0)
-    curve.columns = list(COMPOUND_MAP)                               # SOFT, MEDIUM, HARD
+    n = max(n_circuits or 1, 1)
+    rates = np.full(n, float(deg_rate)) if circuit_deg is None else np.asarray(circuit_deg, dtype=float)
+    if len(rates) != n:
+        raise ValueError(f"circuit_deg has {len(rates)} values for {n} circuits")
+
+    def curve_at(shift: float = 0.0) -> pd.DataFrame:
+        rows = [{"CompoundEncoded": c, "TyreLife": a, "TeamEncoded": t, "LapNumber": lap_number,
+                 "TrackTemp": track_temp, "AirTemp": air_temp, "RainfallEncoded": 0,
+                 "CircuitEncoded": float(k), "DegRate": max(r + shift, 0.0), "Wear": max(r + shift, 0.0) * a,
+                 "Age": a, "C": c}
+                for t in teams_encoded for k, r in enumerate(rates) for c in range(3) for a in range(2, 41)]
+        grid = pd.DataFrame(rows)
+        grid["P"] = apply_deg_tail(grid[feats].astype(float), model.predict, tail or {})
+        out = grid.groupby(["C", "Age"])["P"].mean().unstack(0)
+        out.columns = list(COMPOUND_MAP)                             # SOFT, MEDIUM, HARD
+        return out
+
+    curve = curve_at()
     fresh, deg = curve.loc[2], curve.loc[20] - curve.loc[2]
     checks = {
         "fresh SOFT fastest": bool(fresh["SOFT"] < fresh["MEDIUM"] and fresh["SOFT"] < fresh["HARD"]),
@@ -326,7 +420,14 @@ def lap_model_sanity(model, teams_encoded=(0,), n_circuits: int | None = None,
         f"fresh HARD not >{HARD_VS_MEDIUM_TOL} s faster than MEDIUM":
             bool(fresh["HARD"] > fresh["MEDIUM"] - HARD_VS_MEDIUM_TOL),
     }
-    return {"passed": all(checks.values()), "checks": checks, "curve": curve}
+    response = None
+    if "DegRate" in feats:
+        lo, hi = curve_at(-deg_sd), curve_at(+deg_sd)
+        slope = lambda c: (c.loc[25] - c.loc[2]) / 23
+        response = float((slope(hi) - slope(lo))[["MEDIUM", "HARD"]].mean() / (2 * deg_sd))   # 1 = follows γ exactly
+        if require_response:
+            checks["responds to the degradation rate (≥ 50 % of the change)"] = bool(response >= 0.5)
+    return {"passed": all(checks.values()), "checks": checks, "curve": curve, "deg_response": response}
 
 
 def estimate_tyre_physics(laps: pd.DataFrame, clean_air_gap: float = CLEAN_AIR_GAP,

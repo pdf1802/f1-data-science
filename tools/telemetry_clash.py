@@ -107,34 +107,55 @@ def compute_deltas(grid_a, grid_b, tel_a, tel_b, n_points=300):
             "total_dt_ms": cumulative_dt[-1] * 1000}
 
 
+def _fastest_laps(year, gp, session_type, driver_a, driver_b, session=None):
+    """
+    The two fastest laps as {"telemetry", "lap_time", "compound", "event_name"} — from FastF1
+    (your cache), else from the demo bundle (tools/demo_data.py).
+    """
+    from tools import demo_data
+
+    def from_bundle():
+        packs = [demo_data.fastest_lap(year, gp, session_type, d) for d in (driver_a, driver_b)]
+        return packs if all(packs) else None
+
+    if session is None and demo_data.forced() and (packs := from_bundle()):
+        return packs
+    try:
+        if session is None:
+            session = load_session(year, gp, session_type)
+        packs = []
+        for code in (driver_a, driver_b):
+            lap = session.laps.pick_drivers(code).pick_fastest()
+            if lap is None or (hasattr(lap, "empty") and lap.empty):
+                raise ValueError(f"No timed lap found for {code} in this session.")
+            packs.append({"telemetry": lap.get_telemetry(), "lap_time": lap["LapTime"].total_seconds(),
+                          "compound": lap["Compound"], "event_name": session.event["EventName"]})
+        return packs
+    except Exception:
+        packs = from_bundle()
+        if packs is None:
+            raise
+        return packs
+
+
 def compare_drivers(year, gp, session_type, driver_a, driver_b,
                     n_points=300, session=None):
     """Full Tool 5 pipeline. Pass `session` to reuse an already-loaded one."""
-    if session is None:
-        session = load_session(year, gp, session_type)
-
-    lap_a = session.laps.pick_drivers(driver_a).pick_fastest()
-    lap_b = session.laps.pick_drivers(driver_b).pick_fastest()
-    for code, lap in ((driver_a, lap_a), (driver_b, lap_b)):
-        if lap is None or (hasattr(lap, "empty") and lap.empty):
-            raise ValueError(f"No timed lap found for {code} in this session.")
-
-    tel_a = lap_a.get_telemetry()
-    tel_b = lap_b.get_telemetry()
+    pack_a, pack_b = _fastest_laps(year, gp, session_type, driver_a, driver_b, session)
+    tel_a, tel_b = pack_a["telemetry"], pack_b["telemetry"]
 
     grid_a = resample_lap(tel_a, n_points)
     grid_b = resample_lap(tel_b, n_points)
     corners = detect_corners(grid_a, grid_b)
     deltas = compute_deltas(grid_a, grid_b, tel_a, tel_b, n_points)
-    actual_dt_ms = (lap_a["LapTime"] - lap_b["LapTime"]).total_seconds() * 1000
+    actual_dt_ms = (pack_a["lap_time"] - pack_b["lap_time"]) * 1000
 
     return {
         "meta": {"year": year, "gp": gp, "session": session_type,
                  "driver_a": driver_a, "driver_b": driver_b,
-                 "event_name": session.event["EventName"],
-                 "lap_time_a": lap_a["LapTime"].total_seconds(),
-                 "lap_time_b": lap_b["LapTime"].total_seconds(),
-                 "compound_a": lap_a["Compound"], "compound_b": lap_b["Compound"],
+                 "event_name": pack_a["event_name"],
+                 "lap_time_a": pack_a["lap_time"], "lap_time_b": pack_b["lap_time"],
+                 "compound_a": pack_a["compound"], "compound_b": pack_b["compound"],
                  "lap_length_m": (tel_a["Distance"].max() + tel_b["Distance"].max()) / 2},
         "grids": {"a": grid_a, "b": grid_b},
         "corners": corners,

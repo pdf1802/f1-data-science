@@ -265,14 +265,14 @@ class RaceFeed:
 class TakeControlFeed(RaceFeed):
     """
     Real race up to lap `from_lap`; after that, the lap-by-lap engine races on
-    from the real state, rivals follow the Race Engineer's default plan, and
+    from the real state, every car follows its fastest clear-track plan (race_engineer.optimal_plan), and
     clients can box any driver.
     """
 
     def __init__(self, laps: pd.DataFrame, season: int, race: str, from_lap: int, seed: int = 0):
         super().__init__(laps, season, race)
         from tools import race_engine as eng
-        from tools.race_engineer import DRY, _caps, default_plan
+        from tools.race_engineer import DRY, field_plans
         L, N = self.total_laps, int(from_lap)
         if not 1 <= N < L - 1:
             raise ValueError(f"--take-control must be between 1 and {L - 2}")
@@ -281,15 +281,18 @@ class TakeControlFeed(RaceFeed):
         now = r[r["LapNumber"] == N].set_index("Driver")
         nxt = r[r["LapNumber"] == N + 1].set_index("Driver")
         used = r[(r["LapNumber"] <= N) & r["Compound"].isin(DRY)].groupby("Driver")["Compound"].agg(set)
-        plans = {}
-        self.caps = _caps()
+        tyres = {}
         for d in now.index:
             row, extra = (nxt.loc[d], 0) if d in nxt.index else (now.loc[d], 1)
-            c = str(row["Compound"])
-            a = int(row["TyreLife"]) + extra if pd.notna(row["TyreLife"]) else 1
-            plans[d] = default_plan(c if c in DRY else "MEDIUM", a, used.get(d, set()), N, L, self.caps)
+            tyres[d] = (str(row["Compound"]), int(row["TyreLife"]) + extra if pd.notna(row["TyreLife"]) else 1)
+        # today's degradation from the laps already run, then the fastest clear-track plan for every car
+        config = {"dnf_prob_per_lap": 0.0}
+        deg = eng.live_degradation(r[r["LapNumber"] <= N], race)
+        if deg:
+            config.update(deg_rate=deg["mean"], deg_sd=deg["sd"])
+        plans, _ = field_plans(tyres, dict(used), N, L, eng.resolve_config({**config, "circuit": race, "total_laps": L}))
         setup, cfg, state, info = eng.state_from_real_race(
-            r, season, race, N, {"dnf_prob_per_lap": 0.0}, future_plans="none", plans=plans)
+            r, season, race, N, config, future_plans="none", plans=plans)
         self.live = eng.LiveRace(setup, cfg, state, seed=seed)
         self.N, self.L = N, L
         drv = setup["drivers"]
@@ -305,7 +308,7 @@ class TakeControlFeed(RaceFeed):
         for d in drv:                                             # their real retirements are not this race's
             self.generated[d] = [e for e in self.generated.get(d, []) if e["lap"] <= N]
         self.commanded: set[str] = set()
-        self.log: list[str] = [f"Engine in control after lap {N}: rivals on default plans, no DNFs"]
+        self.log: list[str] = [f"Engine in control after lap {N}: every car on its fastest clear-track plan, no DNFs"]
         self._before: dict[int, tuple] = {}                       # lap → (state, draw index) before running it
         self.t_end = float("inf")                                 # known once the engine reaches the flag
         self.t_end_est = self.T0 + (L - N) * self.typical_lap
@@ -315,7 +318,7 @@ class TakeControlFeed(RaceFeed):
         live, s = self.live, self.live.state
         lap = live.lap + 1
         self._before[lap] = (copy.deepcopy(s), live._li)
-        comp0, age0, cum0 = s["comp"][0].copy(), s["age"][0].copy(), s["cum"][0].copy()
+        comp0, age0 = s["comp"][0].copy(), s["age"][0].copy()
         stops0 = s["n_stops"][0].copy()
         ev = live.step()[0]
         cum1 = live.state["cum"][0]
@@ -456,7 +459,7 @@ class ReplaySession:
             return self._say("Too late to take control: the race is about to finish")
         self.feed = TakeControlFeed(self.laps, self.season, self.race, n, seed=self.seed)
         self.feed.log = self.log + [f"TAKE CONTROL at lap {n}" + (f" (from {by}'s pit wall)" if by else "")
-                                    + ": the engine races on from the real state, rivals on default plans,"
+                                    + ": the engine races on from the real state, every car on its fastest clear-track plan,"
                                     " no DNFs"]
         return self.feed.log[-1]
 

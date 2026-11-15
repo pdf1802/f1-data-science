@@ -25,18 +25,26 @@ TEAMS = ["Alfa Romeo", "AlphaTauri", "Alpine", "Aston Martin", "Ferrari",
 CIRCUITS = ["Bahrain", "British", "Italian", "Monaco"]
 
 
+DEG = {"Bahrain": 0.110, "British": 0.040, "Italian": 0.050, "Monaco": 0.045}     # s/lap, like the real ones
+DEG_GLOBAL, DEG_RACE_SD = 0.058, 0.024
+
+
 def _build_standin_models(out_dir, seed=0):
-    """V3.1-shaped stand-ins: lap model on (compound, tyre age, circuit), overtake model + circuit."""
+    """V3.2-shaped stand-ins: lap model on (compound, tyre age, circuit, γ, γ·age), overtake model + circuit."""
     rng = np.random.default_rng(seed)
-    n = 6000
+    n = 8000
     comp = rng.integers(0, 3, n)
     tyre = rng.integers(1, 40, n)
     circ = rng.integers(0, len(CIRCUITS), n)
-    offset = np.array([0.0, 0.35, 0.7])[comp]            # fresh-tyre pace offset
-    deg = np.array([0.075, 0.045, 0.025])[comp] * tyre   # degradation per lap
+    rate = np.clip(np.array([DEG[c] for c in CIRCUITS])[circ] + rng.normal(0, DEG_RACE_SD, n), 0.01, 0.17)
+    offset = np.array([0.0, 0.35, 0.7])[comp]                           # fresh-tyre pace offset
+    deg = np.array([1.3, 0.85, 0.75])[comp] * rate * tyre               # degradation follows the race's γ
     y = offset + deg + 0.1 * circ + rng.normal(0, 0.1, n)
-    X = pd.DataFrame({"CompoundEncoded": comp, "TyreLife": tyre, "CircuitEncoded": circ}).astype(float)
-    lap_model = XGBRegressor(n_estimators=60, max_depth=4, monotone_constraints=(0, 1, 0)).fit(X, y)
+    X = pd.DataFrame({"CompoundEncoded": comp, "TyreLife": tyre, "CircuitEncoded": circ,
+                      "DegRate": rate, "Wear": rate * tyre}).astype(float)
+    lap_model = XGBRegressor(n_estimators=80, max_depth=4, monotone_constraints=(0, 1, 0, 0, 1)).fit(X, y)
+    with open(os.path.join(out_dir, "degradation.json"), "w") as f:
+        json.dump({"global": DEG_GLOBAL, "circuit_sd": 0.026, "race_sd": DEG_RACE_SD, "circuits": DEG}, f)
 
     gap = rng.uniform(0, 3, n)
     tl_b, tl_a = rng.integers(1, 40, n), rng.integers(1, 40, n)

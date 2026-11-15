@@ -83,10 +83,13 @@ def backtest_race(laps, season, race, frac=0.4, n_sims=300, form_std=None, seed=
             "cover80": float(((real >= lo) & (real <= hi)).mean())}
 
 
-def train_without(laps: pd.DataFrame, season: int, race: str, out_dir: str) -> dict:
+def train_without(laps: pd.DataFrame, season: int, race: str, out_dir: str,
+                  race_table: pd.DataFrame | None = None) -> dict:
     """
-    Modules 1 + 2 (V3.1 pipeline, no CV) and circuit profiles fitted on every race but one.
-    Models are written to out_dir (load with F1_MODEL_DIR); the profiles are returned.
+    Modules 1 + 2 (the train_models pipeline, no CV) and circuit profiles fitted on every race
+    but one. Models are written to out_dir (load with F1_MODEL_DIR); the profiles are returned.
+    race_table: degradation.race_physics of all the races, computed once — each row uses only
+    its own race's laps, so dropping the held-out row is exactly "never saw that race".
     """
     import joblib
 
@@ -96,17 +99,17 @@ def train_without(laps: pd.DataFrame, season: int, race: str, out_dir: str) -> d
     rest = laps[~((laps["Season"] == season) & (laps["Race"] == race))]
     dry, _ = training.dry_races(rest)
     circuits = training.circuit_list(dry)
-    physics = training.estimate_tyre_physics(dry)
-    lap_df, enc = training.build_lap_dataset(dry, circuits=circuits)
-    lap_model = training.make_lap_model().fit(lap_df[training.LAP_MODEL_FEATURES], lap_df["LapDelta"])
+    if race_table is not None:
+        race_table = race_table.drop(index=f"{season} {race}", errors="ignore")
+    fit = training.fit_lap_pipeline(dry, circuits, race_table=race_table)
     ovt = training.build_overtake_dataset(dry, circuits=circuits)
     ovt_model = training.make_overtake_model().fit(ovt[training.OVT_MODEL_FEATURES], ovt["Overtake"])
     os.makedirs(out_dir, exist_ok=True)
-    joblib.dump(lap_model, os.path.join(out_dir, "lap_time_model.pkl"))
+    joblib.dump(fit["model"], os.path.join(out_dir, "lap_time_model.pkl"))
     joblib.dump(ovt_model, os.path.join(out_dir, "overtaking_model.pkl"))
-    joblib.dump(enc, os.path.join(out_dir, "team_encoder.pkl"))
+    joblib.dump(fit["encoder"], os.path.join(out_dir, "team_encoder.pkl"))
     for name, obj in (("compound_map.json", COMPOUND_MAP), ("circuits.json", circuits),
-                      ("deg_tail.json", training.deg_tail(lap_df, physics))):
+                      ("deg_tail.json", fit["tail"]), ("degradation.json", fit["prior"])):
         with open(os.path.join(out_dir, name), "w") as f:
             json.dump(obj, f)
     return build_profiles(rest)
@@ -119,16 +122,18 @@ def run_loro(laps: pd.DataFrame, form_std: float = eng.RACE_FORM_STD, n_sims=300
 
     from tools import shared
     from tools.circuit_profiles import use_profiles
+    from tools import degradation
     from tools.training import dry_races
     dry, _ = dry_races(laps)
     races = dry.groupby(["Season", "Race"]).size().index.tolist()
+    race_table = degradation.race_physics(dry)          # once: each race's row uses only that race
     old = os.environ.get("F1_MODEL_DIR")
     rows = []
     try:
         with tempfile.TemporaryDirectory() as tmp:
             for k, (s, r) in enumerate(races, 1):
                 out = os.path.join(tmp, f"race{k}")
-                profiles = train_without(laps, s, r, out)
+                profiles = train_without(laps, s, r, out, race_table=race_table)
                 os.environ["F1_MODEL_DIR"] = out
                 shared.reset_models()
                 with use_profiles(profiles):
@@ -145,6 +150,97 @@ def run_loro(laps: pd.DataFrame, form_std: float = eng.RACE_FORM_STD, n_sims=300
             os.environ["F1_MODEL_DIR"] = old
         shared.reset_models()
     return pd.DataFrame(rows)
+
+
+def run_stop_counts(laps: pd.DataFrame, train=None, verbose: bool = True, frac: float = 0.4) -> pd.DataFrame:
+    """
+    Does the tyre model get the DECISION right — one stop or two? Leave one race out: Module 1,
+    the degradation prior and the circuit profile (pit loss) are fitted without the race, then
+    the Stint Optimizer says which is faster on a clear track and with what probability, and that
+    is compared with what the finishers really did.
+
+    One row per race: deg_rate (the circuit's prior γ; the global mean for a circuit seen only in
+    that race), gap_s = best one-stop − best two-stop (> 0: two stops are faster), p_two,
+    real_two = share of finishers who stopped twice or more, real_two_green = the same counting
+    only green-flag stops, sc = the race had a Safety Car / VSC stop.
+    The same question is asked twice more, with better knowledge of the day (models still never
+    saw the race): deg_live / gap_live_s — γ updated with the laps up to `frac` of the distance,
+    as the Race Engineer does; deg_final / gap_final_s — γ updated with the whole race (hindsight:
+    the ceiling for any estimate of the day).
+    `train(laps, season, race, out_dir)` defaults to train_without (pass another to compare models).
+    """
+    import tempfile
+
+    from tools import degradation, shared
+    from tools.circuit_profiles import use_profiles
+    from tools.stint_optimizer import best_strategies, real_stop_counts, stop_count_outlook
+    from tools.training import dry_races
+    dry, _ = dry_races(laps)
+    races = dry.groupby(["Season", "Race"]).size().index.tolist()
+    if train is None:
+        race_table = degradation.race_physics(dry)
+        train = lambda lp, s, r, out: train_without(lp, s, r, out, race_table=race_table)
+    real = real_stop_counts(dry)
+    old = os.environ.get("F1_MODEL_DIR")
+    rows = []
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            for k, (s, r) in enumerate(races, 1):
+                out = os.path.join(tmp, f"race{k}")
+                profiles = train(laps, s, r, out)
+                os.environ["F1_MODEL_DIR"] = out
+                shared.reset_models()
+                L = int(dry[(dry["Season"] == s) & (dry["Race"] == r)]["TotalLaps"].iloc[0])
+                with use_profiles(profiles):
+                    cfg = eng.resolve_config({"circuit": r, "total_laps": L})
+                team = shared.get_known_teams()[0]
+                o = stop_count_outlook(L, team, cfg, cfg["pit_loss"], max_stops=2)
+                best = o["expected"].set_index("Stops")["Total Δ (s)"]
+                rr = real[(real["Season"] == s) & (real["Race"] == r)]
+                later = {}
+                this = dry[(dry["Season"] == s) & (dry["Race"] == r)]
+                for name, upto in (("live", int(round(frac * L))), ("final", L)):
+                    est = eng.live_degradation(this[this["LapNumber"] <= upto], r)
+                    if est:
+                        b = best_strategies(L, team, cfg, cfg["pit_loss"], max_stops=2,
+                                            deg_rate=est["mean"]).set_index("Stops")["Total Δ (s)"]
+                        later.update({f"deg_{name}": est["mean"], f"gap_{name}_s": float(b[1] - b[2])})
+                rows.append({"season": s, "race": r, "deg_rate": o["deg_rate"], "pit_loss": cfg["pit_loss"],
+                             "gap_s": float(best[1] - best[2]), "p_two": o["p_best"].get(2, 0.0), **later,
+                             "real_two": float((rr["stops"] >= 2).mean()),
+                             "real_two_green": float((rr["stops"] - rr["sc_stops"] >= 2).mean()),
+                             "sc": bool(rr["sc_stops"].sum() > 0), "finishers": len(rr)})
+                if verbose:
+                    x = rows[-1]
+                    print(f"  {k:2d}/{len(races)} {s} {r}: two-stop {x['gap_s']:+.1f} s, P(two) {x['p_two']:.0%} · "
+                          f"real {x['real_two']:.0%} of {x['finishers']} finishers", flush=True)
+    finally:
+        if old is None:
+            os.environ.pop("F1_MODEL_DIR", None)
+        else:
+            os.environ["F1_MODEL_DIR"] = old
+        shared.reset_models()
+    return pd.DataFrame(rows)
+
+
+def summarise_stop_counts(df: pd.DataFrame) -> dict:
+    """
+    Agreement between the optimizer's one-vs-two-stop answer and the field's majority choice,
+    for each level of knowledge of the day's degradation (before the race / at `frac` / hindsight).
+    """
+    two = df["real_two"] >= 0.5
+    out = {"races": int(len(df)), "real_two_stop_races": int(two.sum()),
+           "brier_p_two": float(((df["p_two"] - two) ** 2).mean()),
+           "brier_base_rate": float(((two.mean() - two) ** 2).mean())}
+    for name, col in (("before", "gap_s"), ("live", "gap_live_s"), ("hindsight", "gap_final_s")):
+        if col not in df:
+            continue
+        said = df[col] > 0
+        out[name] = {"said_two_stop": int(said.sum()), "agree": float((two == said).mean()),
+                     "two_stop_races_found": float((said & two).sum() / max(two.sum(), 1)),
+                     "one_stop_races_found": float((~said & ~two).sum() / max((~two).sum(), 1)),
+                     "spearman_gap_vs_share": float(df[col].corr(df["real_two"], method="spearman"))}
+    return out
 
 
 def summarise(df: pd.DataFrame) -> pd.DataFrame:
@@ -176,7 +272,19 @@ def main(argv=None):
     ap.add_argument("--out", default=os.path.join(REPO_ROOT, "models", "backtest_report.json"))
     ap.add_argument("--loro", action="store_true",
                     help="leave one race out: retrain models + profiles without each race (out-of-sample)")
+    ap.add_argument("--stops", action="store_true",
+                    help="one stop or two? the Stint Optimizer's answer vs what the field did, leave one race out")
     args = ap.parse_args(argv)
+    if args.stops:
+        print("One stop or two — leave one race out…")
+        df = run_stop_counts(pd.read_parquet(args.laps))
+        summary = summarise_stop_counts(df)
+        print(json.dumps(summary, indent=2))
+        out = args.out.replace(".json", "_stops.json")
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        with open(out, "w") as f:
+            json.dump({"summary": summary, "races": df.round(4).to_dict(orient="records")}, f, indent=2)
+        return 0
     if args.loro:
         print(f"Leave-one-race-out at RACE_FORM_STD = {eng.RACE_FORM_STD}: retraining for every race…")
         df = run_loro(pd.read_parquet(args.laps), n_sims=args.sims, frac=args.frac)

@@ -118,3 +118,47 @@ def test_pit_on_lap_n_owes_its_out_lap():
     setup, cfg, state, info = eng.state_from_real_race(laps, 2024, "Test Grand Prix", at_lap=14)
     assert cfg["pit_loss"] - 6 < info["rejoin_s"]["D04"] < cfg["pit_loss"] - 2
     assert set(info["rejoin_s"]) == set(laps[(laps.LapNumber == 14) & laps.PitInTime.notna()]["Driver"])
+
+
+# ── V3.2: the day's degradation is uncertain, and the same for every car ─────
+def test_draws_of_a_seed_did_not_change_when_deg_z_was_added():
+    a, b = eng.draw(4, 6, 5, eng.DEFAULT_CONFIG, 11), eng.draw(4, 6, 5, eng.DEFAULT_CONFIG, 11)
+    assert a.deg_z.shape == (4,) and (a.deg_z == b.deg_z).all()
+    rng = np.random.default_rng(11)                                 # first draw of the stream is still lap_noise
+    assert np.allclose(a.lap_noise, rng.normal(0, eng.NOISE_STD, (4, 6, 5)))
+
+
+def test_degradation_setup_spreads_the_day_around_the_circuit_rate():
+    cfg = eng.resolve_config({"circuit": "Bahrain Grand Prix", "total_laps": 30})
+    d = eng.degradation_setup(np.array([0]), 30, 40, cfg)
+    assert d["deg_tables"].shape[0] == eng.DEG_NODES and len(d["deg_edges"]) == eng.DEG_NODES - 1
+    nodes = d["deg_nodes"]
+    assert (np.diff(nodes) > 0).all() and nodes[eng.DEG_NODES // 2] == pytest.approx(d["deg_rate"])
+    old = d["deg_tables"][:, 0, 1, 25, 5] - d["deg_tables"][:, 0, 1, 2, 5]      # MEDIUM: age 25 vs age 2
+    assert old[-1] > old[0]                                         # a harsher day costs more on old tyres
+    assert (np.diff(d["deg_tables"][:, 0, :, 1:, 5], axis=2) >= -1e-9).all()    # every day is monotone in age
+    known = eng.degradation_setup(np.array([0]), 30, 40, {**cfg, "deg_sd": 0.0})
+    assert known["deg_tables"] is None and np.allclose(known["table"], d["table"])
+
+
+def test_a_harsher_day_makes_the_race_longer(grid):
+    def race_time(z):
+        live = eng.LiveRace.from_grid(grid, {"total_laps": 30, "circuit": "Italian Grand Prix",
+                                             "sc_prob_per_lap": 0.0, "dnf_prob_per_lap": 0.0}, seed=3)
+        live._dr.deg_z[:] = z
+        while not live.finished:
+            live.step()
+        return float(live.state["cum"].min())
+    assert race_time(2.0) > race_time(0.0) > race_time(-2.0)
+
+
+def test_state_from_real_race_reports_the_live_degradation():
+    laps = synthetic_race(2024, "Italian Grand Prix", n_laps=50, seed=1, deg_scale=2.0)
+    early = eng.state_from_real_race(laps, 2024, "Italian Grand Prix", 3)[3]["degradation"]
+    late_setup, late_cfg, _, late_info = eng.state_from_real_race(laps, 2024, "Italian Grand Prix", 40)
+    late = late_info["degradation"]
+    assert early["mean"] == pytest.approx(early["prior_mean"], abs=0.01)
+    assert late["mean"] > late["prior_mean"] + 0.02 and late["sd"] < early["sd"]      # the race showed its hand
+    assert late_cfg["deg_rate"] == late["mean"] and late_setup["deg_rate"] == late["mean"]
+    fixed = eng.state_from_real_race(laps, 2024, "Italian Grand Prix", 40, {"deg_rate": 0.05, "deg_sd": 0.0})
+    assert fixed[0]["deg_rate"] == 0.05 and fixed[3]["degradation"] is None           # the caller's value wins

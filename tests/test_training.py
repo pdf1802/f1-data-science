@@ -17,8 +17,8 @@ TEAMS = ["Red Bull Racing", "Ferrari", "Mercedes", "McLaren", "Aston Martin",
          "Alpine", "Williams", "RB", "Kick Sauber", "Haas F1 Team"]
 
 
-def synthetic_race(season=2024, race="Test Grand Prix", n_laps=50, seed=0):
-    """20 cars, mostly SOFT/MEDIUM → HARD one-stoppers, like a real dry race."""
+def synthetic_race(season=2024, race="Test Grand Prix", n_laps=50, seed=0, deg_scale=1.0):
+    """20 cars, mostly SOFT/MEDIUM → HARD one-stoppers, like a real dry race. deg_scale: how hard on tyres."""
     rng = np.random.default_rng(seed)
     rows = []
     for i in range(20):
@@ -29,7 +29,7 @@ def synthetic_race(season=2024, race="Test Grand Prix", n_laps=50, seed=0):
         t, age, comp, stint = 2.5 * i, 1, first, 1     # spaced out, so clean-air laps exist
         pace = 90 + 0.08 * (i // 2)
         for lap in range(1, n_laps + 1):
-            lt = (pace + OFFSET[comp] + DEG[comp] * age + FUEL * (n_laps - lap)
+            lt = (pace + OFFSET[comp] + deg_scale * DEG[comp] * age + FUEL * (n_laps - lap)
                   + rng.normal(0, 0.15) + (3.0 if lap == 1 else 0))
             pit_in = lap == pit
             pit_out = lap == pit + 1
@@ -70,7 +70,7 @@ def test_fuel_correction_recovers_tyre_physics(laps):
     """With the right fuel correction the model must learn SOFT < MEDIUM < HARD and degradation."""
     df, _ = training.build_lap_dataset(laps, fuel_s_per_lap=FUEL)
     model = training.make_lap_model(n_estimators=200).fit(df[training.LAP_MODEL_FEATURES], df["LapDelta"])
-    s = training.lap_model_sanity(model, np.unique(df["TeamEncoded"]))
+    s = training.lap_model_sanity(model, np.unique(df["TeamEncoded"]), require_response=False)   # one γ for all
     assert s["passed"], s["checks"]
 
 
@@ -81,7 +81,7 @@ def test_without_fuel_correction_the_confound_appears(laps):
     """
     df, _ = training.build_lap_dataset(laps, fuel_s_per_lap=0.0)
     model = training.make_lap_model(n_estimators=200).fit(df[training.LAP_MODEL_FEATURES], df["LapDelta"])
-    assert not training.lap_model_sanity(model, np.unique(df["TeamEncoded"]))["passed"]
+    assert not training.lap_model_sanity(model, np.unique(df["TeamEncoded"]), require_response=False)["passed"]
 
 
 def test_monotone_tyre_life(laps):
@@ -89,6 +89,71 @@ def test_monotone_tyre_life(laps):
     model = training.make_lap_model(n_estimators=100).fit(df[training.LAP_MODEL_FEATURES], df["LapDelta"])
     curve = training.lap_model_sanity(model, [0])["curve"]
     assert (curve.diff().dropna() >= -1e-9).all().all()     # never faster with age
+
+
+# ── V3.2: degradation per race and per circuit ────────────────────────────────
+DEG_SCALE = {"Gentle": 0.5, "Middle": 1.0, "Harsh": 2.0}
+
+
+@pytest.fixture(scope="module")
+def laps_deg():
+    """Three circuits × three seasons; a circuit's races share a degradation level (± a little)."""
+    races = []
+    for k, (name, scale) in enumerate(DEG_SCALE.items()):
+        for j, season in enumerate((2023, 2024, 2025)):
+            races.append(synthetic_race(season, f"{name} Grand Prix", seed=10 * k + j,
+                                        deg_scale=scale * (0.9, 1.0, 1.1)[j]))
+    return pd.concat(races, ignore_index=True)
+
+
+def test_race_physics_recovers_degradation_and_fuel(laps_deg):
+    from tools import degradation
+    P = degradation.race_physics(laps_deg, n_boot=30)
+    assert len(P) == 9 and (P["deg_se"] > 0).all()
+    by_circuit = P.groupby("circuit")["deg"].mean()
+    assert by_circuit["Gentle"] < by_circuit["Middle"] < by_circuit["Harsh"]
+    assert by_circuit["Harsh"] / by_circuit["Gentle"] == pytest.approx(4.0, rel=0.25)   # true ratio 2.0 / 0.5
+    assert P["fuel"].mean() == pytest.approx(FUEL, abs=0.01)
+
+
+def test_prior_shrinks_towards_the_global_mean(laps_deg):
+    from tools import degradation
+    P = degradation.race_physics(laps_deg, n_boot=30)
+    prior = degradation.fit_prior(P)
+    raw = P.groupby("circuit")["deg"].mean()
+    c = prior["circuits"]
+    assert c["Gentle"] < c["Middle"] < c["Harsh"]
+    assert abs(c["Harsh"] - prior["global"]) <= abs(raw["Harsh"] - prior["global"]) + 1e-9   # never further out
+    assert prior["circuit_sd"] > prior["race_sd"] > 0          # built that way: circuits differ more than years
+    # one noisy race at a new circuit barely moves away from the global mean
+    one = P.iloc[:1].assign(circuit="New", deg=0.30, deg_se=0.2)
+    one.index = ["2025 New Grand Prix"]
+    assert abs(degradation.fit_prior(pd.concat([P, one]))["circuits"]["New"] - prior["global"]) < 0.05
+
+
+def test_pipeline_learns_to_respond_to_the_degradation_rate(laps_deg):
+    circuits = training.circuit_list(laps_deg)
+    fit = training.fit_lap_pipeline(laps_deg, circuits, n_boot=30)
+    prior = fit["prior"]
+    s = training.lap_model_sanity(fit["model"], n_circuits=len(circuits), tail=fit["tail"],
+                                  circuit_deg=[prior["circuits"][c] for c in circuits], deg_sd=prior["race_sd"])
+    assert s["passed"], s["checks"]
+    # the same circuit label, served a harsher day → clearly more degradation
+    rows = pd.DataFrame({"CompoundEncoded": 1.0, "TyreLife": [2.0, 22.0], "CircuitEncoded": float(circuits.index("Middle"))})
+    def slope(rate):
+        X = rows.assign(DegRate=rate, Wear=rate * rows["TyreLife"])[training.LAP_MODEL_FEATURES]
+        return float(np.diff(fit["model"].predict(X))[0]) / 20
+    assert slope(prior["circuits"]["Harsh"]) > slope(prior["circuits"]["Gentle"]) + 0.02
+
+
+def test_live_estimate_moves_from_the_prior_towards_the_day(laps_deg):
+    from tools import degradation
+    harsh = laps_deg[(laps_deg["Race"] == "Harsh Grand Prix") & (laps_deg["Season"] == 2024)]
+    true = float(degradation.race_physics(harsh, n_boot=20)["deg"].iloc[0])
+    early = degradation.live_estimate(harsh[harsh["LapNumber"] <= 4], prior_mean=0.05, prior_sd=0.024)
+    late = degradation.live_estimate(harsh[harsh["LapNumber"] <= 40], prior_mean=0.05, prior_sd=0.024)
+    assert early["mean"] == pytest.approx(0.05, abs=0.01) and early["sd"] > 0.8 * 0.024    # still the prior
+    assert abs(late["mean"] - true) < abs(0.05 - true) / 2 and late["sd"] < early["sd"] / 2
 
 
 def test_lap_model_grouped_eval(laps):
@@ -148,7 +213,7 @@ def test_train_models_cli_end_to_end(laps, tmp_path, monkeypatch):
     out = tmp_path / "models"
     assert train_models.main(["--laps", str(src), "--out", str(out), "--folds", "3"]) == 0
     report = json.loads((out / "training_report.json").read_text())
-    assert report["version"] == "V3.1" and all(report["module1"]["sanity"].values())
+    assert report["version"] == "V3.2" and all(report["module1"]["sanity"].values())
 
     monkeypatch.setenv("F1_MODEL_DIR", str(out))
     shared.reset_models()

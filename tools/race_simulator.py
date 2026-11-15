@@ -158,7 +158,6 @@ def _run(setup: dict, cfg: dict, dr) -> dict:
 
 def summarise(res: dict, grid: pd.DataFrame) -> pd.DataFrame:
     pos, ret = res["positions"], res["retired"]
-    D = pos.shape[1]
     out = pd.DataFrame({
         "Driver": grid["Driver"].values, "Team": grid["Team"].values, "Grid": grid["Grid"].values,
         "Win %": (pos == 1).mean(0) * 100,

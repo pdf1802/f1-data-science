@@ -18,9 +18,10 @@ How a call is made
        they are now (frame `rel_dist`) and their recent pace. Nothing that has not
        happened yet at the current replay time is used (no future leakage).
     2. Pace per driver from the laps run so far (race_engine.state_from_real_race).
-    3. Rivals follow a simple, documented default plan (default_plan): stop when
-       the tyre reaches the age range covered by the data, or when the
-       two-compound rule still has to be met.
+    3. How hard is today on tyres? The circuit's usual degradation, updated with the
+       laps run so far (race_engine.live_degradation). Every car — rivals and ours —
+       is then given the plan that is fastest to the flag on a clear track at that
+       degradation (optimal_plan): no, one or two more stops, two compounds used.
     4. Each option for our driver is simulated to the flag on the SAME random
        draws (paired Monte Carlo) → P(win / podium / points), expected position,
        and the gain over "stay out" with a 95 % CI.
@@ -46,11 +47,10 @@ import numpy as np
 import pandas as pd
 
 from tools import race_engine as eng
-from tools.shared import COMPOUND_NAMES, load_models
+from tools.shared import COMPOUND_NAMES
 
 DRY = ("SOFT", "MEDIUM", "HARD")
 TYRE_NAMES = {**COMPOUND_NAMES, 3: "INTERMEDIATE", 4: "WET"}   # f1-race-replay's tyre ints
-DEFAULT_CAPS = {"SOFT": 19, "MEDIUM": 28, "HARD": 34}   # p90 tyre age in the training data
 ALERT_GAP = 3.0            # s — undercut alert range
 MIN_CALL_LAP = 3           # no calls on the opening laps (pace not known yet)
 # Out of the race: since the car's last line crossing, at least OUT_WITNESSES other cars have
@@ -67,11 +67,15 @@ STOPPED_S = 20.0           # s of replay time without moving → parked (retired
 # The real rel_dist is distance along a reference lap whose zero is not exactly the timing line.
 # On the stand-in stream rel_dist looked better only because it is built from the lap's real duration.
 REL_TRUST: float | None = None
-STAY = "Stay out (default plan)"
+STAY = "Stay out (current plan)"
 OPTION_COLUMNS = ["Option", "P(win)", "P(podium)", "P(points)", "Exp. position",
                   "Gain vs first (places)", "Gain 95% CI"]
 CALL_KEYS = ("lap", "total_laps", "driver", "running", "tyres", "standings", "options", "headline",
-             "alert", "pace", "rival_plans", "track_status", "t", "estimated")
+             "alert", "pace", "rival_plans", "track_status", "t", "estimated", "degradation")
+MIN_STINT = 5              # laps — shortest stint a plan may contain
+# An extra stop must be worth this much on a clear track before a plan takes it: after a stop the
+# car rejoins in traffic and has to pass on track, which the clear-track sum does not see.
+EXTRA_STOP_MARGIN = 2.0    # s per extra stop
 
 
 # ── Reading the feed ─────────────────────────────────────────────────────────
@@ -334,38 +338,69 @@ def snapshot_at_lap(laps: pd.DataFrame, n: int, t_now: float, frame_drivers: dic
 
 
 # ── Plans ────────────────────────────────────────────────────────────────────
-def _caps() -> dict:
-    from tools import shared
-    load_models()
-    return (shared._DEG_TAIL or {}).get("cap") or DEFAULT_CAPS
-
-
-def default_plan(compound: str, age: int, used: set, lap: int, total_laps: int,
-                 caps: dict | None = None) -> list[tuple[int, str]]:
+def optimal_plan(compound: str, age: int, used: set, lap: int, total_laps: int, cum: np.ndarray,
+                 pit_loss: float, max_stops: int = 2, min_stint: int = MIN_STINT,
+                 margin: float = EXTRA_STOP_MARGIN) -> list[tuple[int, str]]:
     """
-    What a rival is assumed to do: one more stop when the tyre would run past the
-    age range the model has data for, or when the two-compound rule is not met
-    yet; onto HARD (MEDIUM if already on HARD). Deliberately simple and visible.
+    The fastest way to the flag from here on a clear track (V3.2): no, one or two more stops —
+    every pit lap × every compound, keeping the two-compound rule. This is what each rival is
+    assumed to do, and how each of our options continues after its first move.
+
+    age: the tyre's age on the NEXT lap (lap + 1). cum[c, a]: seconds lost over the first a laps
+    of a set of compound c at today's degradation (race_engine.tyre_cost_table). A stop "on lap
+    X" is the in-lap; the new tyres start on X + 1. Each extra stop must gain `margin` seconds.
     """
-    caps = caps or DEFAULT_CAPS
-    remaining = total_laps - lap
-    left_on_tyre = max(caps.get(compound, 25) - age, 1)
-    rule_met = len(set(used) | {compound}) >= 2
-    if remaining <= left_on_tyre and rule_met:
-        return []
-    stop = lap + max(1, min(left_on_tyre, remaining - 3))
-    if stop >= total_laps:
-        return []
-    return [(stop, "HARD" if compound != "HARD" else "MEDIUM")]
+    L, R = total_laps, total_laps - lap
+    c0 = DRY.index(compound) if compound in DRY else 1
+    A = cum.shape[1] - 1
+    at = lambda c, a: cum[c, np.minimum(a, A)]
+    done = at(c0, age - 1)
+    used = (set(used) & set(DRY)) | {DRY[c0]}
+    legal = lambda *cs: len(used | {DRY[c] for c in cs}) >= 2
+    best_cost, best = np.inf, []
+    if R <= 0:
+        return best
+    if legal():
+        best_cost = float(at(c0, age - 1 + R) - done)
+    X = np.arange(lap + 1, L - min_stint + 1)                     # in-laps that leave a real last stint
+    if not len(X):
+        if not legal() and R >= 2:                                # rule still open near the flag: stop anyway
+            return [(L - 1, "HARD" if compound != "HARD" else "MEDIUM")]
+        return best
+    cur = at(c0, age - 1 + (X - lap)) - done                      # current set up to the in-lap
+    for c1 in range(3):
+        if not legal(c1):
+            continue
+        tot = cur + pit_loss + margin + at(c1, L - X)
+        i = int(np.argmin(tot))
+        if tot[i] < best_cost - 1e-9:
+            best_cost, best = float(tot[i]), [(int(X[i]), DRY[c1])]
+    if max_stops >= 2 and len(X) > min_stint:
+        i1, i2 = np.triu_indices(len(X), k=min_stint)             # second stop ≥ min_stint laps after the first
+        X1, X2 = X[i1], X[i2]
+        cur2 = cur[i1]
+        for c1 in range(3):
+            mid = at(c1, X2 - X1)
+            for c2 in range(3):
+                if not legal(c1, c2):
+                    continue
+                tot = cur2 + 2 * (pit_loss + margin) + mid + at(c2, L - X2)
+                i = int(np.argmin(tot))
+                if tot[i] < best_cost - 1e-9:
+                    best_cost, best = float(tot[i]), [(int(X1[i]), DRY[c1]), (int(X2[i]), DRY[c2])]
+    return best
 
 
-def plan_after_box(box_lap: int, compound: str, total_laps: int, caps: dict) -> list[tuple[int, str]]:
-    """Box on box_lap onto `compound`; add one later stop only if that tyre cannot reach the flag."""
-    plan = [(box_lap, compound)]
-    if total_laps - box_lap > caps.get(compound, 25) + 5:
-        nxt = "HARD" if compound != "HARD" else "MEDIUM"
-        plan.append((box_lap + caps.get(compound, 25), nxt))
-    return plan
+def field_plans(tyres: dict, used: dict, lap: int, total_laps: int, cfg: dict) -> tuple[dict, np.ndarray]:
+    """
+    optimal_plan for every car. tyres: {driver: (compound, age on the next lap)}; used: {driver:
+    set of compounds already raced}; cfg: resolved engine config (pit_loss, circuit, deg_rate).
+    Returns ({driver: plan}, the tyre-cost table used).
+    """
+    cum = eng.tyre_cost_table(cfg, total_laps + 45)
+    pit = float(cfg.get("pit_loss", eng.PIT_COST_GREEN))
+    return ({d: optimal_plan(c if c in DRY else "MEDIUM", a, used.get(d, set()), lap, total_laps, cum, pit)
+             for d, (c, a) in tyres.items()}, cum)
 
 
 def make_headline(table: pd.DataFrame) -> tuple[pd.DataFrame, str]:
@@ -471,7 +506,7 @@ class RaceEngineer:
         call = {"lap": n, "total_laps": self.total_laps, "driver": self.driver, "running": False,
                 "tyres": None, "standings": pd.DataFrame(), "options": pd.DataFrame(columns=OPTION_COLUMNS),
                 "headline": headline, "alert": None, "pace": {}, "rival_plans": {}, "track_status": "1",
-                "t": None, "estimated": []}
+                "t": None, "estimated": [], "degradation": None}
         call.update(kw)
         return call
 
@@ -486,10 +521,7 @@ class RaceEngineer:
         snap, tyres, running, estimated = snapshot_at_lap(laps, n, t_now, frame_drivers, status, stopped)
         if snap.empty or not running:
             return self._blank(n, "No cars running", t=t_now, track_status=status)
-        caps = _caps()
         used = snap.dropna(subset=["Compound"]).groupby("Driver")["Compound"].agg(lambda s: set(s) & set(DRY))
-        plans = {d: default_plan(c if c in DRY else "MEDIUM", a, used.get(d, set()), n, self.total_laps, caps)
-                 for d, (c, a) in tyres.items()}
         weather = (payload.get("frame") or {}).get("weather") or {}
         config = {"dnf_prob_per_lap": 0.0}
         for key in ("track_temp", "air_temp"):
@@ -497,13 +529,22 @@ class RaceEngineer:
                 config[key] = float(weather[key])
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
+            # today's degradation first: every plan below depends on it
+            race_name = snap["Race"].iloc[0]
+            deg = eng.live_degradation(snap[snap["LapNumber"] <= n], race_name)
+            if deg:
+                config.update(deg_rate=deg["mean"], deg_sd=deg["sd"])
+            plan_cfg = eng.resolve_config({**config, "circuit": race_name, "total_laps": self.total_laps})
+            plans, cum = field_plans(tyres, used, n, self.total_laps, plan_cfg)
+            pit = float(plan_cfg["pit_loss"])
             setup, cfg, state, info = eng.state_from_real_race(
                 snap, snap["Season"].iloc[0], snap["Race"].iloc[0], n, config,
                 future_plans="none", current_tyres=tyres, plans=plans, track_status=status)
         live = eng.LiveRace(setup, cfg, state, seed=self.seed)
         standings = live.standings()
         standings["Estimated"] = standings["Driver"].isin(estimated)
-        base = dict(t=t_now, track_status=status, estimated=estimated, pace=info["pace"], rival_plans=plans)
+        base = dict(t=t_now, track_status=status, estimated=estimated, pace=info["pace"], rival_plans=plans,
+                    degradation=deg)
         if self.driver not in setup["drivers"]:
             return self._blank(n, f"{self.driver} is not running", standings=standings, **base)
 
@@ -519,10 +560,10 @@ class RaceEngineer:
         for c in DRY:
             if c == comp and not rule_met_now and len(my_used) < 2:
                 continue                                   # would not satisfy the two-compound rule
-            options[f"Box now → {c}"] = plan_after_box(nxt, c, self.total_laps, caps)
+            options[f"Box now → {c}"] = self._box_plan(nxt, c, my_used | {comp}, cum, pit)
         best_alt = "HARD" if comp != "HARD" else "MEDIUM"
         if nxt + 3 < self.total_laps - 1:
-            options[f"Box in 3 laps → {best_alt}"] = plan_after_box(nxt + 3, best_alt, self.total_laps, caps)
+            options[f"Box in 3 laps → {best_alt}"] = self._box_plan(nxt + 3, best_alt, my_used | {comp}, cum, pit)
         if rule_met_now and plans[self.driver]:
             options["No more stops"] = []
         table = live.evaluate(self.driver, options, n_sims=self.n_sims, seed=self.seed + n)
@@ -531,6 +572,11 @@ class RaceEngineer:
                 "tyres": {"compound": comp, "age": age, "rule_met": rule_met_now},
                 "standings": standings, "options": table, "headline": headline,
                 "alert": self._undercut_alert(standings, cfg, n, sc_active="4" in status), **base}
+
+    def _box_plan(self, box_lap: int, compound: str, used: set, cum: np.ndarray, pit: float) -> list[tuple[int, str]]:
+        """Box on box_lap onto `compound`, then whatever is fastest from there (at most one more stop)."""
+        rest = optimal_plan(compound, 1, used, box_lap, self.total_laps, cum, pit, max_stops=1)
+        return [(box_lap, compound)] + rest
 
     def _undercut_alert(self, standings: pd.DataFrame, cfg: dict, n: int, sc_active: bool = False) -> dict | None:
         from tools.undercut import DriverState, undercut_analysis
@@ -544,7 +590,7 @@ class RaceEngineer:
             return None
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            # (team is not a V3.1 model input; the feed does not carry it)
+            # (team is not a model input since V3.1; the feed does not carry it)
             chaser = DriverState(me["Driver"], str(me["Team"]), int(me["Pos"]), me["Compound"],
                                  int(me["TyreAge"]) + 1)
             leader = DriverState(ahead["Driver"], str(ahead["Team"]), int(ahead["Pos"]), ahead["Compound"],

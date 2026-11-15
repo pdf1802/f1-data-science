@@ -414,9 +414,9 @@ class RaceEngineerWindow(QMainWindow):
         note = QLabel("Every option is raced to the flag on the same simulated races, so the "
                       "difference is the option, not luck. 'vs stay out' = places gained ± 95 % CI; "
                       "an option is only called when its gain beats its CI.\n"
-                      "Rivals follow the assumed plan in the timing tower. Known biases: one-stop "
-                      "strategies look too good at high-degradation tracks; no fuel effect between "
-                      "strategies; dry races only.")
+                      "Every car is given the plan that is fastest to the flag on a clear track at "
+                      "today's tyre wear (timing tower); real teams also react to each other. "
+                      "Dry races only.")
         note.setObjectName("note")
         note.setWordWrap(True)
         self.tower = table(["Pos", "Driver", "Gap", "Int", "Tyre", "Laps", "Stops", "Next stop (assumed)"])
@@ -586,6 +586,9 @@ class RaceEngineerWindow(QMainWindow):
             bits.append(status)
         if call.get("estimated"):
             bits.append(f"{len(call['estimated'])} cars estimated")
+        deg = call.get("degradation")
+        if deg:                                                    # how hard today is on tyres (live estimate)
+            bits.append(f"tyre wear {deg['mean']:.3f} s/lap (usual here {deg['prior_mean']:.3f})")
         bits.append(f"{seconds:.1f} s")
         self.sub.setText("  ·  ".join(bits))
 
