@@ -212,6 +212,15 @@ def test_optimal_plan_keeps_the_two_compound_rule_and_reaches_the_flag():
     assert re_.optimal_plan("HARD", 5, {"SOFT"}, 57, 57, cum, 22.0) == []          # race over
 
 
+def test_a_stop_due_this_lap_is_a_box_call_not_a_stay_out():
+    plan = [(21, "HARD"), (40, "MEDIUM")]
+    assert re_.stay_reference(plan, 20, 57) == (plan, None)                     # not due yet: stay = the plan
+    stay, due = re_.stay_reference(plan, 21, 57)
+    assert due == "HARD" and stay == [(22, "HARD"), (40, "MEDIUM")]             # stay out = one lap later
+    assert re_.stay_reference([(56, "SOFT")], 56, 57) == ([], "SOFT")           # last chance: stay = no stop
+    assert re_.stay_reference([], 30, 57) == ([], None)
+
+
 def test_optimal_plan_stops_more_when_tyres_degrade_more():
     gentle, harsh = _cum(rate=(0.03, 0.02, 0.01)), _cum(rate=(0.30, 0.22, 0.16))
     stops = lambda cum: len(re_.optimal_plan("MEDIUM", 1, set(), 0, 57, cum, 22.0))

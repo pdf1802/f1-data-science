@@ -391,6 +391,20 @@ def optimal_plan(compound: str, age: int, used: set, lap: int, total_laps: int, 
     return best
 
 
+def stay_reference(plan: list[tuple[int, str]], next_lap: int, total_laps: int) -> tuple[list, str | None]:
+    """
+    What "stay out" means this lap, and whether the plan itself says to box now.
+    If the plan's first stop is on `next_lap` (the lap about to start), following the plan IS
+    boxing now: the call must be BOX, and "stay out" — the reference every option is compared
+    with — becomes the same plan with that stop one lap later. → (stay-out plan, compound due or None)
+    """
+    if not plan or plan[0][0] != next_lap:
+        return plan, None
+    later = [s for s in plan[1:] if s[0] > next_lap + 1]
+    delayed = [(next_lap + 1, plan[0][1])] if next_lap + 1 < total_laps else []
+    return delayed + later, plan[0][1]
+
+
 def field_plans(tyres: dict, used: dict, lap: int, total_laps: int, cfg: dict) -> tuple[dict, np.ndarray]:
     """
     optimal_plan for every car. tyres: {driver: (compound, age on the next lap)}; used: {driver:
@@ -556,11 +570,14 @@ class RaceEngineer:
         my_used = used.get(self.driver, set())
         rule_met_now = len(my_used | {comp}) >= 2
         nxt = n + 1
-        options = {STAY: plans[self.driver]}
+        stay_plan, due = stay_reference(plans[self.driver], nxt, self.total_laps)
+        options = {STAY: stay_plan}
         for c in DRY:
             if c == comp and not rule_met_now and len(my_used) < 2:
                 continue                                   # would not satisfy the two-compound rule
             options[f"Box now → {c}"] = self._box_plan(nxt, c, my_used | {comp}, cum, pit)
+        if due:                                            # the plan's own stop is this lap: that IS "box now"
+            options[f"Box now → {due}"] = plans[self.driver]
         best_alt = "HARD" if comp != "HARD" else "MEDIUM"
         if nxt + 3 < self.total_laps - 1:
             options[f"Box in 3 laps → {best_alt}"] = self._box_plan(nxt + 3, best_alt, my_used | {comp}, cum, pit)
@@ -568,6 +585,8 @@ class RaceEngineer:
             options["No more stops"] = []
         table = live.evaluate(self.driver, options, n_sims=self.n_sims, seed=self.seed + n)
         table, headline = make_headline(table)
+        if due and not headline.startswith("BOX NOW"):
+            headline = f"BOX NOW → {due} — the plan's stop is this lap"
         return {"lap": n, "total_laps": self.total_laps, "driver": self.driver, "running": True,
                 "tyres": {"compound": comp, "age": age, "rule_met": rule_met_now},
                 "standings": standings, "options": table, "headline": headline,

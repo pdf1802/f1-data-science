@@ -127,8 +127,10 @@ def model_info() -> dict:
     teams = range(len(enc.classes_)) if "TeamEncoded" in feats else (0,)
     circuits = shared.get_known_circuits()
     rates = [shared.circuit_deg_rate(c) for c in circuits] if "DegRate" in feats and circuits else None
+    young = shared.degradation_prior().get("young_soft_laps", {})
     sanity = lap_model_sanity(lap_model, teams, n_circuits=len(circuits), circuit_deg=rates,
-                              deg_sd=shared.deg_race_sd())
+                              deg_sd=shared.deg_race_sd(),
+                              fresh_weights=[young.get(c, 0) for c in circuits] if young and circuits else None)
     version = ("V2" if "LapNumber" in feats else "V3.2" if "DegRate" in feats
                else "V3.1" if "CircuitEncoded" in feats else "V3")
     return {"version": version, "sanity": sanity}
@@ -207,7 +209,14 @@ if _ready:
     _info = model_info()
     _ok = _info["sanity"]["passed"]
     _chips.append(("Tyre model", f"{_info['version']} · physics checks {'pass' if _ok else 'FAIL'}", "ok" if _ok else "bad"))
-    _chips.append(("Race engine", "beats 'order stays the same' in 78 % of 36 races", ""))
+    try:                                             # the number comes from the report, not from memory
+        import json
+        with open(os.path.join(shared.REPO_ROOT, "models", "backtest_report_loro.json")) as _f:
+            _bt = json.load(_f)["summary"][0]
+        _chips.append(("Race engine", f"beats 'order stays the same' in {_bt['sim_beats_baseline_rho']:.0%} of "
+                                      f"{_bt['races']} unseen races", ""))
+    except (OSError, KeyError, IndexError, ValueError):
+        pass
 else:
     _chips.append(("Models", "not found", "bad"))
 _laps_all = cached_laps()
@@ -270,7 +279,8 @@ with TAB["sim"]:
                 if len(_plan["pit_laps"]) > 1:
                     _g["Stop2Lap"], _g["Stop2Compound"] = _plan["pit_laps"][1], _plan["compounds"][2]
                 st.session_state["grid"] = _g
-                st.session_state["grid_event"] = q.attrs.get("event", f"{gp} {year}")
+                st.session_state["grid_event"] = q.attrs.get("event", f"{gp} {year}") + (
+                    " (from the demo bundle)" if q.attrs.get("source") else "")
                 st.session_state["grid_circuit"] = q.attrs.get("event_name", gp)
             except Exception as e:
                 if not first_visit:
@@ -663,7 +673,8 @@ with TAB["qualy"]:
                 cmpd = compare_with_actual(pred, actual) if actual is not None else None
 
                 k = st.columns(3)
-                k[0].markdown(f"**Event**  \n{q.attrs.get('event', g)}")
+                k[0].markdown(f"**Event**  \n{q.attrs.get('event', g)}"
+                              + ("  \n*from the demo bundle*" if q.attrs.get("source") else ""))
                 if cmpd:
                     k[1].metric("ρ qualy order", f"{cmpd['spearman_qualy']:.3f}",
                                 help="Spearman rank correlation between the qualifying order and the "

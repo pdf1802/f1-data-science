@@ -50,3 +50,6 @@ models/*.json
 
 # Demo bundle (python -m tools.demo_data): small, committed on purpose
 !demo/models/*.pkl
+
+# Evaluation reports are results, not artefacts: keep them in git so the README's numbers can be checked
+!models/*report*.json

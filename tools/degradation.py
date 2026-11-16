@@ -158,24 +158,43 @@ def fit_prior(P: pd.DataFrame) -> dict:
         tau2 = sig2 = 0.025 ** 2
     else:
         mu, tau2, sig2 = _fit_random_effects(P)
-    circuits = {}
+    circuits, circuit_sd = {}, {}
     for c, g in P.groupby("circuit"):
         w = 1.0 / (sig2 + g["deg_se"].to_numpy() ** 2)
         m, V = float((w * g["deg"]).sum() / w.sum()), float(1.0 / w.sum())
         circuits[c] = float(np.clip((m / V + mu / tau2) / (1 / V + 1 / tau2), *DEG_RANGE))
+        # what a NEW race here can be: year-to-year spread + how well the circuit's own mean is known
+        circuit_sd[c] = float(np.sqrt(sig2 + 1.0 / (1 / V + 1 / tau2)))
     s2 = P["deg_se"].clip(lower=1e-4) ** 2
     prior = P["circuit"].map(circuits)
     races = ((P["deg"] / s2 + prior / sig2) / (1 / s2 + 1 / sig2)).clip(*DEG_RANGE)
 
     f2 = P["fuel_se"].clip(lower=1e-4) ** 2
-    f_mu = float(np.average(P["fuel"], weights=1 / f2)) if len(P) else 0.055
-    f_tau2 = max(float(P["fuel"].var() - f2.mean()) if len(P) > 1 else 0.0, 1e-5)
+    f_mu, f_tau2 = _fit_spread(P["fuel"].to_numpy(), f2.to_numpy()) if len(P) > 1 else (0.055, 1e-4)
     fuel = (P["fuel"] / f2 + f_mu / f_tau2) / (1 / f2 + 1 / f_tau2)
     return {"global": float(np.clip(mu, *DEG_RANGE)), "circuit_sd": float(np.sqrt(tau2)),
-            "race_sd": float(np.sqrt(sig2)), "circuits": circuits,
+            "race_sd": float(np.sqrt(sig2)), "circuits": circuits, "circuit_pred_sd": circuit_sd,
             "races": {r: float(v) for r, v in races.items()},
             "fuel": {"global": f_mu, "sd": float(np.sqrt(f_tau2)), "races": {r: float(v) for r, v in fuel.items()}},
             "n_races": int(len(P))}
+
+
+def _fit_spread(x: np.ndarray, se2: np.ndarray) -> tuple[float, float]:
+    """
+    ML estimate of (mean, between-race variance) for values measured with known, unequal errors:
+    x_i ~ N(mu, tau2 + se2_i). The textbook shortcut var(x) − mean(se²) lets ONE badly measured
+    race (Monaco 2024: se 0.31) swallow the whole variance; the likelihood weighs each race by
+    its own precision instead.
+    """
+    from scipy.optimize import minimize_scalar
+
+    def profile(log_tau2):
+        w = 1.0 / (np.exp(log_tau2) + se2)
+        mu = float((w * x).sum() / w.sum())
+        return 0.5 * float((np.log(1.0 / w) + w * (x - mu) ** 2).sum()), mu
+
+    res = minimize_scalar(lambda t: profile(t)[0], bounds=(np.log(1e-8), np.log(1.0)), method="bounded")
+    return profile(res.x)[1], float(np.exp(res.x))
 
 
 def fuel_map(prior: dict) -> dict:

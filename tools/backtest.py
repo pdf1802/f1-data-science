@@ -223,22 +223,52 @@ def run_stop_counts(laps: pd.DataFrame, train=None, verbose: bool = True, frac: 
     return pd.DataFrame(rows)
 
 
-def summarise_stop_counts(df: pd.DataFrame) -> dict:
+# Races where the number of stops was set by the rules, not by the tyres: no test of a tyre model.
+MANDATED_STOPS = {(2025, "Monaco Grand Prix")}       # two stops were compulsory at Monaco in 2025
+
+
+def _auc(y: np.ndarray, score: np.ndarray) -> float:
+    """P(a random two-stop race has a larger score than a random one-stop race); ties count half."""
+    pos, neg = score[y], score[~y]
+    if not len(pos) or not len(neg):
+        return float("nan")
+    return float(((pos[:, None] > neg[None, :]).mean() + 0.5 * (pos[:, None] == neg[None, :]).mean()))
+
+
+def summarise_stop_counts(df: pd.DataFrame, n_boot: int = 2000, seed: int = 0) -> dict:
     """
-    Agreement between the optimizer's one-vs-two-stop answer and the field's majority choice,
-    for each level of knowledge of the day's degradation (before the race / at `frac` / hindsight).
+    How good is the optimizer's one-vs-two-stop answer, at each level of knowledge of the day
+    (before the race / at `frac` of the distance / hindsight)? Races in MANDATED_STOPS are left out.
+    Per level: agreement with the field's majority at "which is faster", the same for the trivial
+    "always one stop", the AUC of the gap with a bootstrap 95 % interval (36 races are few: the
+    intervals are wide and overlap), and the same without Bahrain — the circuit the fix was aimed at.
+    The pre-race probability is scored with the Brier score against the base rate.
     """
-    two = df["real_two"] >= 0.5
+    df = df[~df.apply(lambda r: (int(r["season"]), r["race"]) in MANDATED_STOPS, axis=1)].reset_index(drop=True)
+    two = (df["real_two"] >= 0.5).to_numpy()
+    rng = np.random.default_rng(seed)
     out = {"races": int(len(df)), "real_two_stop_races": int(two.sum()),
+           "always_one_stop_agree": float((~two).mean()),
            "brier_p_two": float(((df["p_two"] - two) ** 2).mean()),
            "brier_base_rate": float(((two.mean() - two) ** 2).mean())}
+    not_bahrain = (df["race"] != "Bahrain Grand Prix").to_numpy()
     for name, col in (("before", "gap_s"), ("live", "gap_live_s"), ("hindsight", "gap_final_s")):
         if col not in df:
             continue
-        said = df[col] > 0
+        gap = df[col].to_numpy()
+        said = gap > 0
+        boots = []
+        for _ in range(n_boot):
+            i = rng.integers(0, len(df), len(df))
+            boots.append(_auc(two[i], gap[i]))
+        lo, hi = np.nanpercentile(boots, [2.5, 97.5])
         out[name] = {"said_two_stop": int(said.sum()), "agree": float((two == said).mean()),
                      "two_stop_races_found": float((said & two).sum() / max(two.sum(), 1)),
                      "one_stop_races_found": float((~said & ~two).sum() / max((~two).sum(), 1)),
+                     "auc": _auc(two, gap), "auc_ci95": [float(lo), float(hi)],
+                     "auc_without_bahrain": _auc(two[not_bahrain], gap[not_bahrain]),
+                     "two_stop_found_without_bahrain": float((said & two & not_bahrain).sum()
+                                                             / max((two & not_bahrain).sum(), 1)),
                      "spearman_gap_vs_share": float(df[col].corr(df["real_two"], method="spearman"))}
     return out
 

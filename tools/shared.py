@@ -284,13 +284,15 @@ def circuit_deg_rate(event: str | None) -> float:
 
 def circuit_deg_sd(event: str | None) -> float:
     """
-    1-sd uncertainty of a race's γ before it starts: the race-to-race spread at a known circuit;
-    wider (plus the spread between circuits) at a circuit the models have not seen.
+    1-sd uncertainty of a race's γ before it starts. At a known circuit: the race-to-race spread
+    plus how well the circuit's own mean is known (from 1–4 races, not very). At a circuit the
+    models have not seen: the race-to-race spread plus the spread between circuits.
     """
     prior = degradation_prior()
     sd = float(prior.get("race_sd", DEFAULT_DEG_RACE_SD))
-    if circuit_name(event) in prior.get("circuits", {}):
-        return sd
+    name = circuit_name(event)
+    if name in prior.get("circuits", {}):
+        return float(prior.get("circuit_pred_sd", {}).get(name, sd))
     return float(np.hypot(sd, prior.get("circuit_sd", DEFAULT_DEG_RACE_SD)))
 
 

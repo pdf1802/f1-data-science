@@ -97,6 +97,7 @@ def qualifying(year: int, gp: str) -> pd.DataFrame | None:
     q["GapToPole"] = q["QualyTime"] - q["QualyTime"].iloc[0]
     q.attrs["event"] = f"{event} {year}"
     q.attrs["event_name"] = event
+    q.attrs["source"] = "demo bundle"
     return q
 
 

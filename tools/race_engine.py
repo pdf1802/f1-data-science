@@ -162,7 +162,7 @@ def degradation_setup(teams_enc: np.ndarray, n_laps: int, max_age: int, cfg: dic
                 "deg_tables": None, "deg_edges": None, "deg_nodes": None}
     from scipy.stats import norm
     rate = cfg.get("deg_rate")
-    rate = float(circuit_deg_rate(cfg.get("circuit")) if rate is None else rate)
+    rate = float(np.clip(circuit_deg_rate(cfg.get("circuit")) if rate is None else rate, DEG_MIN, DEG_MAX))
     sd = cfg.get("deg_sd")
     sd = float(circuit_deg_sd(cfg.get("circuit")) if sd is None else sd)
     table = _delta_table(teams_enc, n_laps, max_age, cfg, deg_rate=rate)

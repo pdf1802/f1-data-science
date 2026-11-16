@@ -85,9 +85,13 @@ def main(argv=None):
         print(f"⚠️  {len(failed)} sessions could not be loaded — training continues without them.")
 
     _hr("2/6  Dry races + circuits")
-    laps, wet = training.dry_races(laps)
+    broken = training.broken_races(laps)
+    laps, excluded = training.dry_races(laps)
+    wet = [r for r in excluded if r not in broken]
     for s, r in wet:
         print(f"  ☔ excluded (wet): {s} {r}")
+    for s, r in broken:
+        print(f"  ⚠️ excluded (tyre data missing or placeholder): {s} {r}")
     circuits = training.circuit_list(laps)
     print(f"{laps.groupby(['Season', 'Race']).ngroups} dry races · {len(circuits)} circuits: {', '.join(circuits)}")
 
@@ -126,9 +130,14 @@ def main(argv=None):
     deg_varies = bool(lap_df["DegRate"].std() > 0.005)       # nothing to respond to if every race is alike
     s1 = training.lap_model_sanity(lap_model, n_circuits=len(circuits), tail=tail, circuit_deg=circuit_deg,
                                    deg_sd=prior["race_sd"] or shared.DEFAULT_DEG_RACE_SD,
-                                   require_response=deg_varies)
+                                   require_response=deg_varies,
+                                   fresh_weights=[prior["young_soft_laps"].get(c, 0) for c in circuits])
     print("\nPredicted LapDelta (s) by tyre age — each circuit at its own degradation rate, then averaged:")
     print(s1["curve"].loc[[2, 5, 10, 15, 20, 25, 30, 35, 40]].round(2).to_string())
+    fr, fu = s1["fresh"], s1["fresh_unweighted"]
+    print("Fresh tyres (age 2) where the SOFT was raced young: "
+          + " · ".join(f"{c} {fr[c]:.2f}" for c in fr)
+          + "   |   plain average over circuits: " + " · ".join(f"{c} {fu[c]:.2f}" for c in fu))
     for name, ok in s1["checks"].items():
         print(f"  {'✅' if ok else '❌'} {name}")
     if s1.get("deg_response") is not None:
@@ -196,13 +205,13 @@ def main(argv=None):
         "version": "V3.2", "source": source, "fuel_s_per_lap": prior["fuel"]["global"],
         "degradation": {k: prior[k] for k in ("global", "circuit_sd", "race_sd", "circuits", "n_races")},
         "clean_air_gap_s": training.CLEAN_AIR_GAP,
-        "races_used": int(lap_df["Group"].nunique()), "wet_races_excluded": wet,
+        "races_used": int(lap_df["Group"].nunique()), "wet_races_excluded": wet, "bad_data_races_excluded": broken,
         "failed_sessions": failed, "circuits": circuits,
         "physics_reference": physics.round(4).to_dict(orient="index"),
         "deg_tail": tail,
         "module1": {"features": training.LAP_MODEL_FEATURES, "n_laps": len(lap_df),
                     **({k: v for k, v in ev1.items() if k != "folds"} if ev1 else {}),
-                    "sanity": s1["checks"], "deg_response": s1.get("deg_response"),
+                    "sanity": s1["checks"], "deg_response": s1.get("deg_response"), "fresh": s1.get("fresh"), "fresh_unweighted": s1.get("fresh_unweighted"),
                     "curve": s1["curve"].loc[[2, 10, 20, 30]].round(3).to_dict()},
         "module2": {"features": training.OVT_MODEL_FEATURES, "n_rows": len(ovt_df),
                     **({k: v for k, v in ev2.items() if k != "calibration"} if ev2 else {}),

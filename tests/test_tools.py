@@ -112,15 +112,35 @@ def test_more_degradation_favours_more_stops():
 
 def test_real_stop_counts_ignore_red_flag_changes():
     rows = []
-    for d, pits in (("AAA", {10: "1", 30: "1"}), ("BBB", {2: "15", 25: "4"}), ("CCC", {12: "1"})):
+    # AAA: two normal stops + a drive-through on lap 20 (pit lane, same tyres). BBB: a red-flag change + a
+    # Safety-Car stop. CCC: retires.
+    for d, pits, no_change in (("AAA", {10: "1", 20: "1", 30: "1"}, {20}), ("BBB", {2: "15", 25: "4"}, set()),
+                               ("CCC", {12: "1"}, set())):
+        age = 0
         for lap in range(1, 41 if d != "CCC" else 20):                 # CCC retires on lap 19
+            age += 1
             rows.append({"Season": 2024, "Race": "X Grand Prix", "Driver": d, "LapNumber": lap, "TotalLaps": 40,
                          "PitInTime": pd.Timedelta(seconds=lap) if lap in pits else pd.NaT,
-                         "TrackStatus": pits.get(lap, "1")})
+                         "TrackStatus": pits.get(lap, "1"), "TyreLife": age, "Compound": "MEDIUM"})
+            if lap in pits and lap not in no_change:
+                age = 0                                                # new tyres from the next lap
     out = real_stop_counts(pd.DataFrame(rows)).set_index("Driver")
     assert list(out.index) == ["AAA", "BBB"]                           # finishers only
-    assert out.loc["AAA", "stops"] == 2 and out.loc["AAA", "sc_stops"] == 0
+    assert out.loc["AAA", "stops"] == 2 and out.loc["AAA", "sc_stops"] == 0     # the drive-through is not a stop
     assert out.loc["BBB", "stops"] == 1 and out.loc["BBB", "sc_stops"] == 1     # red-flag change is free
+
+
+def test_broken_tyre_data_is_excluded_like_a_wet_race():
+    from test_training import synthetic_race
+
+    from tools import training
+    good = synthetic_race(2024, "Good Grand Prix", n_laps=30, seed=1)
+    bad = synthetic_race(2025, "Bad Grand Prix", n_laps=30, seed=2)
+    bad.loc[bad["LapNumber"] <= 12, ["Compound", "TyreLife"]] = [None, np.nan]   # 40 % of the race has no tyre data
+    laps = pd.concat([good, bad], ignore_index=True)
+    assert training.broken_races(laps) == [(2025, "Bad Grand Prix")]
+    usable, excluded = training.dry_races(laps)
+    assert excluded == [(2025, "Bad Grand Prix")] and set(usable["Race"]) == {"Good Grand Prix"}
 
 
 def test_undercut_is_deterministic():

@@ -172,12 +172,32 @@ def race_wetness(laps: pd.DataFrame) -> pd.DataFrame:
     })
 
 
+MIN_TYRE_DATA = 0.90    # share of a race's laps that must carry a compound and a tyre age
+
+
+def broken_races(laps: pd.DataFrame, min_share: float = MIN_TYRE_DATA) -> list[tuple]:
+    """
+    Races whose tyre data cannot be trusted: (season, race) where fewer than `min_share` of the
+    laps have a known compound and a tyre age. Found the hard way: the cache of Miami 2025 has no
+    tyre data for 15 of 20 cars before lap 25 and then the SAME sequence for all of them
+    (MEDIUM 1…8, HARD 1…25) whatever lap they really stopped on — a placeholder, not data. Every
+    other race is above 98 %.
+    """
+    known = laps["Compound"].astype(str).str.upper().isin(["SOFT", "MEDIUM", "HARD", "INTERMEDIATE", "WET"])
+    ok = (known & laps["TyreLife"].notna()).groupby([laps["Season"], laps["Race"]]).mean()
+    return [tuple(x) for x in ok[ok < min_share].index]
+
+
 def dry_races(laps: pd.DataFrame, max_share: float = WET_MAX_SHARE):
-    """(laps of dry races only, list of excluded (season, race))."""
+    """
+    (laps of the races the models can use, list of excluded (season, race)): wet races are out,
+    and so are races whose tyre data is broken (broken_races).
+    """
     w = race_wetness(laps)
     wet = w[(w["wet_tyre_share"] >= max_share) | (w["rain_share"] >= max_share)].index
+    out = [tuple(x) for x in wet] + [r for r in broken_races(laps) if r not in set(wet)]
     idx = pd.MultiIndex.from_frame(laps[["Season", "Race"]])
-    return laps[~idx.isin(wet)].copy(), [tuple(x) for x in wet]
+    return laps[~idx.isin(out)].copy(), out
 
 
 def circuit_list(laps: pd.DataFrame) -> list[str]:
@@ -299,7 +319,7 @@ def evaluate_lap_model(df: pd.DataFrame, n_splits: int = 5, make=make_lap_model,
     pred, base, folds = np.zeros(len(df)), np.zeros(len(df)), []
     for k, (tr, te) in enumerate(GroupKFold(n_splits=n_splits).split(X, y, g)):
         Xtr, Xte = X.iloc[tr], X.iloc[te]
-        if physics is not None and "DegRate" in features:
+        if physics is not None and {"DegRate", "Wear"} & set(features):
             prior = fit_prior(physics[physics.index.isin(set(g.iloc[tr]))])
             rate_tr = g.iloc[tr].map(prior["races"]).fillna(circuit.iloc[tr].map(prior["circuits"])).fillna(prior["global"])
             rate_te = circuit.iloc[te].map(prior["circuits"]).fillna(prior["global"])
@@ -363,6 +383,9 @@ def fit_lap_pipeline(dry: pd.DataFrame, circuits: list[str], n_boot: int = 200,
                                     deg_rates={**prior["races"], "_default": prior["global"]})
     model = make_lap_model().fit(lap_df[LAP_MODEL_FEATURES], lap_df["LapDelta"])
     tail = deg_tail(lap_df, physics, ref_deg=prior["global"])
+    young_soft = lap_df[(lap_df["CompoundEncoded"] == 0) & (lap_df["TyreLife"] <= 4)]
+    counts = young_soft["Race"].astype(str).map(circuit_name).value_counts()
+    prior["young_soft_laps"] = {c: int(counts.get(c, 0)) for c in circuits}     # where the SOFT's fresh pace is seen
     return {"model": model, "encoder": enc, "lap_df": lap_df, "tail": tail, "prior": prior,
             "race_table": race_table, "physics": physics}
 
@@ -370,7 +393,8 @@ def fit_lap_pipeline(dry: pd.DataFrame, circuits: list[str], n_boot: int = 200,
 def lap_model_sanity(model, teams_encoded=(0,), n_circuits: int | None = None,
                      track_temp: float = 35.0, air_temp: float = 25.0, lap_number: int = 30,
                      tail: dict | None = None, deg_rate: float = DEFAULT_DEG_RATE,
-                     circuit_deg=None, deg_sd: float = 0.024, require_response: bool = True) -> dict:
+                     circuit_deg=None, deg_sd: float = 0.024, require_response: bool = True,
+                     fresh_weights=None) -> dict:
     """
     Physics gate, averaged over teams and circuits so one odd value can't pass/fail it.
     What the data supports (see estimate_tyre_physics):
@@ -391,6 +415,13 @@ def lap_model_sanity(model, teams_encoded=(0,), n_circuits: int | None = None,
     all circuits at one global rate asks for combinations that never happened (a fresh SOFT at a
     low-degradation Bahrain) and the answer there is extrapolation, not physics. Without
     `circuit_deg` every circuit uses `deg_rate`.
+
+    `fresh_weights` (one per circuit: how many young SOFT laps the training data has there) —
+    the same principle for check 1. Young SOFT laps are rare (about 1 % of the data) and come
+    from a few circuits; elsewhere the SOFT's fresh pace is an extrapolation that lands level
+    with the HARD. The fresh-tyre comparison is therefore made where the SOFT was actually raced
+    young, all three compounds weighted by the same circuits. The plain average over circuits
+    is still returned (`fresh_unweighted`) and printed, so the weakness stays visible.
     """
     feats = _features_of(model, LAP_MODEL_FEATURES)
     from tools.shared import apply_deg_tail
@@ -409,10 +440,15 @@ def lap_model_sanity(model, teams_encoded=(0,), n_circuits: int | None = None,
         grid["P"] = apply_deg_tail(grid[feats].astype(float), model.predict, tail or {})
         out = grid.groupby(["C", "Age"])["P"].mean().unstack(0)
         out.columns = list(COMPOUND_MAP)                             # SOFT, MEDIUM, HARD
-        return out
+        by_circuit = grid[grid["Age"] == 2].groupby(["CircuitEncoded", "C"])["P"].mean().unstack(1)
+        by_circuit.columns = list(COMPOUND_MAP)
+        return out, by_circuit
 
-    curve = curve_at()
-    fresh, deg = curve.loc[2], curve.loc[20] - curve.loc[2]
+    curve, fresh_by_circuit = curve_at()
+    fresh_unweighted, deg = curve.loc[2], curve.loc[20] - curve.loc[2]
+    w = None if fresh_weights is None else np.asarray(fresh_weights, dtype=float)
+    fresh = fresh_unweighted if w is None or w.sum() <= 0 else \
+        pd.Series(np.average(fresh_by_circuit.to_numpy(), axis=0, weights=w), index=fresh_by_circuit.columns)
     checks = {
         "fresh SOFT fastest": bool(fresh["SOFT"] < fresh["MEDIUM"] and fresh["SOFT"] < fresh["HARD"]),
         **{f"{c} slower at age 20 than age 2": bool(deg[c] > 0) for c in DRY},
@@ -422,12 +458,13 @@ def lap_model_sanity(model, teams_encoded=(0,), n_circuits: int | None = None,
     }
     response = None
     if "DegRate" in feats:
-        lo, hi = curve_at(-deg_sd), curve_at(+deg_sd)
+        lo, hi = curve_at(-deg_sd)[0], curve_at(+deg_sd)[0]
         slope = lambda c: (c.loc[25] - c.loc[2]) / 23
         response = float((slope(hi) - slope(lo))[["MEDIUM", "HARD"]].mean() / (2 * deg_sd))   # 1 = follows γ exactly
         if require_response:
             checks["responds to the degradation rate (≥ 50 % of the change)"] = bool(response >= 0.5)
-    return {"passed": all(checks.values()), "checks": checks, "curve": curve, "deg_response": response}
+    return {"passed": all(checks.values()), "checks": checks, "curve": curve, "deg_response": response,
+            "fresh": fresh.to_dict(), "fresh_unweighted": fresh_unweighted.to_dict()}
 
 
 def estimate_tyre_physics(laps: pd.DataFrame, clean_air_gap: float = CLEAN_AIR_GAP,

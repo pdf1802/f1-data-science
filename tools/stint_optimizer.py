@@ -25,7 +25,7 @@ import numpy as np
 import pandas as pd
 
 from tools.shared import (COMPOUND_MAP, COMPOUND_NAMES, DEG_RANGE, PIT_COST_GREEN, circuit_deg_rate,
-                          deg_race_sd, encode_circuit, encode_compound, encode_team,
+                          circuit_deg_sd, encode_circuit, encode_compound, encode_team,
                           predict_lap_deltas, uses_deg_rate)
 
 MIN_STINT = 5        # laps — shortest stint the search considers (as optimize_pit_lap's earliest_pit)
@@ -191,7 +191,7 @@ def stop_count_outlook(total_laps: int, team: str | int, config: dict, pit_cost:
                 "p_best": {int(s): float(s == best) for s in expected["Stops"]}}
     from scipy.stats import norm
     rate = float(circuit_deg_rate(config.get("circuit")) if deg_rate is None else deg_rate)
-    sd = float(deg_race_sd() if deg_sd is None else deg_sd)
+    sd = float(circuit_deg_sd(config.get("circuit")) if deg_sd is None else deg_sd)
     cuts = norm.ppf(np.arange(0, n_nodes + 1) / n_nodes)
     z = (norm.pdf(cuts[:-1]) - norm.pdf(cuts[1:])) * n_nodes            # mean of z in each equally likely slice
     rows = []
@@ -217,7 +217,10 @@ def real_stop_counts(laps: pd.DataFrame) -> pd.DataFrame:
         for drv, g in r.groupby("Driver"):
             if g["LapNumber"].max() < L - 1:
                 continue
-            pits = g[g["PitInTime"].notna() & (g["LapNumber"] < L)]
+            g = g.sort_values("LapNumber")
+            fresh = g["TyreLife"].shift(-1) < g["TyreLife"]             # the next lap is on a younger tyre
+            swap = g["Compound"].shift(-1).notna() & (g["Compound"].shift(-1) != g["Compound"])
+            pits = g[g["PitInTime"].notna() & (g["LapNumber"] < L) & (fresh | swap)]   # drive-throughs are not stops
             status = pits["TrackStatus"].astype(str)
             racing = pits[~status.str.contains("5")]
             rows.append({"Season": season, "Race": race, "Driver": drv, "stops": len(racing),
