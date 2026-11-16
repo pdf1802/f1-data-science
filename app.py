@@ -17,33 +17,33 @@ from __future__ import annotations
 
 import os
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from tools import shared
+from tools import demo_data, shared
 from tools.shared import COMPOUND_COLOURS, team_colour
+from ui import theme as T
 
-st.set_page_config(page_title="F1 Pit Wall", page_icon="🏎️", layout="wide")
+st.set_page_config(page_title="F1 Pit Wall", page_icon="🏁", layout="wide", initial_sidebar_state="collapsed")
+T.inject_css()
 
 COMPOUNDS = ["SOFT", "MEDIUM", "HARD"]
-YEARS = [2025, 2024, 2023, 2022]
-NEUTRAL = "#8a8f98"
-GOOD, BAD = "#2fbf71", "#e5484d"
+NEUTRAL, GOOD, BAD = T.NEUTRAL, T.GOOD, T.BAD
+base_layout, show = T.style, T.show
 
 
 # ── Cached wrappers ──────────────────────────────────────────────────────────
 @st.cache_resource(show_spinner="Loading models…")
 def get_models():
-    shared.enable_fastf1_cache()
     return shared.load_models()
 
 
-@st.cache_data(show_spinner="Loading qualifying from FastF1…", max_entries=16)
+@st.cache_data(show_spinner="Loading qualifying…", max_entries=16)
 def cached_quali(year: int, gp: str) -> pd.DataFrame:
     from tools.qualy_predictor import load_qualifying_results
-    shared.enable_fastf1_cache()
     return load_qualifying_results(year, gp)
 
 
@@ -56,7 +56,6 @@ def cached_race_result(year: int, gp: str):
 @st.cache_data(show_spinner="Loading telemetry and computing deltas…", max_entries=8)
 def cached_clash(year, gp, session_type, a, b):
     from tools.telemetry_clash import compare_drivers
-    shared.enable_fastf1_cache()
     return compare_drivers(year, gp, session_type, a, b)
 
 
@@ -77,12 +76,12 @@ def cached_what_if(base: pd.DataFrame, new: pd.DataFrame, focus: str, config: di
     return r
 
 
-LAPS_PATH = os.environ.get("F1_LAPS", os.path.join(shared.REPO_ROOT, "data", "laps_2022_2025.parquet"))
+LAPS_PATH = shared.laps_path()
 
 
 @st.cache_data(show_spinner="Loading the lap data…")
 def cached_laps() -> pd.DataFrame | None:
-    if not os.path.exists(LAPS_PATH):
+    if LAPS_PATH is None:
         return None
     from tools.training import dry_races
     return dry_races(pd.read_parquet(LAPS_PATH))[0]
@@ -105,6 +104,20 @@ def cached_engineer_call(season: int, race: str, driver: str, lap: int, n_sims: 
     return RaceEngineer(driver, race, n_sims=n_sims).update(feed.payload(t))
 
 
+@st.cache_data(show_spinner="Searching one, two and three stops…", max_entries=64)
+def cached_outlook(total_laps: int, circuit: str | None, pit_cost: float, track_temp: float, air_temp: float):
+    from tools.stint_optimizer import stop_count_outlook
+    cfg = {"track_temp": track_temp, "air_temp": air_temp, "circuit": circuit}
+    return stop_count_outlook(total_laps, shared.get_known_teams()[0], cfg, pit_cost)
+
+
+@st.cache_data(show_spinner=False)
+def cached_real_stops() -> pd.DataFrame | None:
+    from tools.stint_optimizer import real_stop_counts
+    laps = cached_laps()
+    return None if laps is None else real_stop_counts(laps)
+
+
 @st.cache_resource(show_spinner=False)
 def model_info() -> dict:
     """Which model generation is loaded + the physics gate from tools/training.py."""
@@ -112,8 +125,12 @@ def model_info() -> dict:
     lap_model, _, enc = get_models()
     feats = shared.model_features(lap_model, shared.LAP_FEATURES)
     teams = range(len(enc.classes_)) if "TeamEncoded" in feats else (0,)
-    sanity = lap_model_sanity(lap_model, teams, n_circuits=len(shared.get_known_circuits()))
-    version = "V2" if "LapNumber" in feats else "V3.1" if "CircuitEncoded" in feats else "V3"
+    circuits = shared.get_known_circuits()
+    rates = [shared.circuit_deg_rate(c) for c in circuits] if "DegRate" in feats and circuits else None
+    sanity = lap_model_sanity(lap_model, teams, n_circuits=len(circuits), circuit_deg=rates,
+                              deg_sd=shared.deg_race_sd())
+    version = ("V2" if "LapNumber" in feats else "V3.2" if "DegRate" in feats
+               else "V3.1" if "CircuitEncoded" in feats else "V3")
     return {"version": version, "sanity": sanity}
 
 
@@ -127,8 +144,8 @@ def circuit_picker(col, key: str, default: str = "Bahrain"):
         return None
     options = known + [AVERAGE_CIRCUIT]
     choice = col.selectbox("Circuit", options, options.index(default) if default in known else len(known),
-                           key=key, help="The V3.1 models know the circuit: degradation and overtaking "
-                                         "difficulty differ a lot (Monaco vs Spa).")
+                           key=key, help="The models know the circuit: tyre degradation and how hard it is "
+                                         "to overtake differ a lot (Monaco vs Bahrain).")
     return None if choice == AVERAGE_CIRCUIT else choice
 
 
@@ -142,20 +159,8 @@ def models_ready() -> bool:
 
 def need_models():
     st.warning(
-        "This tool needs the trained models (`lap_time_model.pkl`, `overtaking_model.pkl`, "
-        "`team_encoder.pkl`, `compound_map.json`). Train them with `notebooks/lap_time_model.ipynb` "
-        "and `notebooks/overtaking_model.ipynb`, then put them in `models/` or set `F1_MODEL_DIR`.",
-        icon="🧰")
-
-
-def base_layout(fig: go.Figure, title: str = "", height: int = 380, **kw) -> go.Figure:
-    fig.update_layout(title=dict(text=title, x=0, y=0.98, yanchor="top", font=dict(size=15)),
-                      height=height, margin=dict(l=10, r=10, t=90 if title else 40, b=10),
-                      hovermode=kw.pop("hovermode", "x unified"),
-                      legend=dict(orientation="h", yanchor="bottom", y=1.0, x=0), **kw)
-    fig.update_xaxes(showgrid=False, zeroline=False)
-    fig.update_yaxes(gridcolor="rgba(128,128,128,0.15)", zeroline=False)
-    return fig
+        "This tool needs the trained models. Train them with `python -m tools.train_models` "
+        "(needs the lap Parquet), or use the demo bundle in `demo/`.", icon="🧰")
 
 
 def fmt_lap(seconds: float) -> str:
@@ -164,61 +169,73 @@ def fmt_lap(seconds: float) -> str:
     return f"{int(m)}:{sec:06.3f}"
 
 
-def show(fig):
-    st.plotly_chart(fig, width="stretch", theme="streamlit")
+def has_fastf1_cache() -> bool:
+    """Your own FastF1 cache is in use (otherwise: the demo bundle)."""
+    return not demo_data.forced()
 
 
-def event_picker(key: str, default_gp: str = "Bahrain Grand Prix", default_year: int = 2024):
-    c1, c2 = st.columns([1, 3])
-    year = c1.selectbox("Season", YEARS, index=YEARS.index(default_year), key=f"{key}_y")
-    gp = c2.text_input("Grand Prix (FastF1 event name or country)", default_gp, key=f"{key}_gp",
-                       help="Use the full event name, e.g. 'British Grand Prix'. "
-                            "Short names like 'Great Britain' can be fuzzy-matched to the wrong race.")
-    return year, gp
-
-
-# ── Sidebar ──────────────────────────────────────────────────────────────────
-with st.sidebar:
-    st.title("🏎️ F1 Pit Wall")
-    st.caption("Strategy & performance tools built on FastF1 + XGBoost.")
-    if models_ready():
-        _md = shared.resolve_model_dir()
-        _label = "repo `models/`" if _md == shared._LOCAL_MODEL_DIR else "`$F1_MODEL_DIR`" \
-            if os.environ.get("F1_MODEL_DIR") else f"`{os.path.basename(_md)}`"
-        st.success(f"Models loaded from {_label}", icon="✅")
-        _info = model_info()
-        if _info["sanity"]["passed"]:
-            st.caption(f"Module 1 {_info['version']} · physics check ✅")
-        else:
-            st.warning(f"Module 1 {_info['version']} fails the physics check — tyre/stint numbers "
-                       "are not trustworthy.", icon="⚠️")
-            with st.expander("Details"):
-                for _k, _ok in _info["sanity"]["checks"].items():
-                    st.markdown(f"{'✅' if _ok else '❌'} {_k}")
-                st.caption("Fix: `python -m tools.train_models` (Module 1 V3: fuel-corrected target).")
+def event_picker(key: str, kind: str = "qualifying", default=(2024, "Bahrain Grand Prix")):
+    """
+    Season + event. With a FastF1 cache: every race in the lap data (and you can type another).
+    Without one: the events of the demo bundle.
+    """
+    laps = cached_laps()
+    if has_fastf1_cache() and laps is not None:
+        events = sorted({(int(a), b) for a, b in laps[["Season", "Race"]].drop_duplicates().itertuples(index=False)},
+                        key=lambda e: (-e[0], e[1]))
+        free = True
     else:
-        st.error("Models not found — model-based tabs are disabled.", icon="⚠️")
-    st.markdown(
-        "**Models**\n"
-        "- *Module 1* — LapDelta regressor (compound, tyre age, circuit; fuel-corrected)\n"
-        "- *Module 2* — overtake classifier (real gap, tyres, lap, position, circuit)\n\n"
-        "**Known limitations** are listed in the README — read them before "
-        "trusting a number.")
-    st.caption("Data: FastF1, offline from your cache (F1 live timing answers 401 to downloads since "
-               "Oct 2026) + the lap Parquet. Not affiliated with Formula 1.")
+        events, free = demo_data.events(kind), False
+    if not events:
+        events, free = [default], True
+    labels = [f"{y} {g}" for y, g in events]
+    want = f"{default[0]} {default[1]}"
+    choice = st.selectbox("Event", labels, labels.index(want) if want in labels else 0, key=f"{key}_ev",
+                          accept_new_options=free,
+                          help="Type 'YEAR Event name' for a session of your FastF1 cache that is not listed."
+                          if free else "The public demo ships a few sessions; clone the repo to use your own cache.")
+    if choice in labels:
+        return events[labels.index(choice)]
+    year, _, gp = str(choice).partition(" ")
+    return (int(year), gp) if year.isdigit() and gp else events[0]
 
-st.title("F1 Pit Wall")
 
-tabs = st.tabs(["🏁 Race Simulator", "🔀 What-If", "⏱️ Undercut", "🛞 Stint Optimizer",
-                "📊 Qualy → Race", "📡 Telemetry Clash", "🎧 Race Engineer"])
+# ── Header ───────────────────────────────────────────────────────────────────
+_ready = models_ready()
+_chips = []
+if _ready:
+    _info = model_info()
+    _ok = _info["sanity"]["passed"]
+    _chips.append(("Tyre model", f"{_info['version']} · physics checks {'pass' if _ok else 'FAIL'}", "ok" if _ok else "bad"))
+    _chips.append(("Race engine", "beats 'order stays the same' in 78 % of 36 races", ""))
+else:
+    _chips.append(("Models", "not found", "bad"))
+_laps_all = cached_laps()
+if _laps_all is not None:
+    _chips.append(("Data", f"{_laps_all.groupby(['Season', 'Race']).ngroups} dry races, 2022–2025", ""))
+_demo = _ready and os.path.abspath(shared.resolve_model_dir()).startswith(os.path.abspath(demo_data.DEMO_DIR))
+_chips.append(("Mode", "demo bundle" if _demo or not has_fastf1_cache() else "your local data", "warn" if _demo else ""))
+T.header("F1 Pit Wall",
+         "Race strategy from real lap data: a tyre model and an overtaking model, a lap-by-lap race engine "
+         "checked against 36 real races, and an engineer that makes the call.", _chips)
+if _ready and not _info["sanity"]["passed"]:
+    with st.expander("The tyre model fails a physics check — tyre and stint numbers are not trustworthy"):
+        for _k, _v in _info["sanity"]["checks"].items():
+            st.markdown(f"{'✅' if _v else '❌'} {_k}")
+        st.caption("Fix: `python -m tools.train_models`.")
+
+tabs = st.tabs(["Race engineer", "How many stops", "Undercut", "Race simulator", "What-if",
+                "Qualifying → race", "Telemetry"])
+TAB = {"engineer": tabs[0], "stint": tabs[1], "undercut": tabs[2], "sim": tabs[3], "whatif": tabs[4],
+       "qualy": tabs[5], "clash": tabs[6]}
 
 
 # ═════════════════════════════ 1. RACE SIMULATOR ════════════════════════════
-with tabs[0]:
-    st.subheader("Monte Carlo race simulator")
-    st.caption("Thousands of races with tyre degradation (Module 1), overtakes that actually change "
-               "track position (Module 2), Safety Cars that bunch the field and make stops cheap, "
-               "and DNFs. Edit any driver's strategy in the table.")
+with TAB["sim"]:
+    st.subheader("Race simulator")
+    st.caption("A thousand races from the grid: tyres that degrade as this circuit usually does (and a "
+               "different amount each day), overtakes that change track position, Safety Cars that bunch "
+               "the field and make stops cheap, retirements. Edit any driver's strategy in the table.")
     if not models_ready():
         need_models()
     else:
@@ -231,20 +248,33 @@ with tabs[0]:
             st.caption(f"Circuit profile (measured on {len(prof['races'])} dry races): {prof['laps']} laps · "
                        f"typical lap {prof['base_lap_s']:.1f} s · pit loss {prof['pit_loss_s']} s · "
                        f"Safety Car {prof['sc_per_lap'] * 100:.1f} % per lap")
-        c1, c2, c3, c4 = st.columns(4)
-        total_laps = c1.number_input("Race laps", 20, 80, int(prof.get("laps", 52)))
-        start_c = c2.selectbox("Default start tyre", COMPOUNDS, index=1)
-        next_c = c3.selectbox("Default 2nd tyre", COMPOUNDS, index=2)
-        pit_lap = c4.number_input("Default pit lap", 2, 78, int(round(total_laps * 0.45)))
+        c1, c2 = st.columns([1, 3])
+        total_laps = c1.number_input("Race laps", 20, 80, int(prof.get("laps", 52)), key=f"sim_l_{gp}")
+        # everyone starts on the plan that is fastest here on a clear track (How many stops tab)
+        _exp = cached_outlook(int(total_laps), gp, float(prof.get("pit_loss_s") or shared.PIT_COST_GREEN),
+                              35.0, 25.0)["expected"]
+        _exp = _exp[_exp["Stops"] <= 2].sort_values("Total Δ (s)").reset_index(drop=True)
+        _labels = [f"{'One stop' if n == 1 else 'Two stops'}: {strat} ({laps_})"
+                   for n, strat, laps_ in zip(_exp["Stops"], _exp["Strategy"], _exp["Pit laps"])]
+        _plan = _exp.iloc[_labels.index(c2.selectbox(
+            "Everyone's plan to start with", _labels, key=f"sim_plan_{gp}_{total_laps}",
+            help="The fastest one- and two-stop plans for this circuit; edit any driver in the table."))]
+        start_c, next_c, pit_lap = _plan["compounds"][0], _plan["compounds"][1], _plan["pit_laps"][0]
 
-        if st.button("Load grid from qualifying", key="load_grid"):
+        first_visit = "grid" not in st.session_state and "grid_tried" not in st.session_state
+        st.session_state["grid_tried"] = True
+        if st.button("Load grid from qualifying", key="load_grid") or first_visit:
             try:
                 q = cached_quali(year, gp)
-                st.session_state["grid"] = grid_from_qualifying(q, total_laps, start_c, next_c, pit_lap)
+                _g = grid_from_qualifying(q, total_laps, start_c, next_c, pit_lap)
+                if len(_plan["pit_laps"]) > 1:
+                    _g["Stop2Lap"], _g["Stop2Compound"] = _plan["pit_laps"][1], _plan["compounds"][2]
+                st.session_state["grid"] = _g
                 st.session_state["grid_event"] = q.attrs.get("event", f"{gp} {year}")
                 st.session_state["grid_circuit"] = q.attrs.get("event_name", gp)
             except Exception as e:
-                st.error(f"Couldn't load qualifying for {gp} {year}: {e}")
+                if not first_visit:
+                    st.error(f"Couldn't load qualifying for {gp} {year}: {e}")
 
         if "grid" not in st.session_state:
             st.info("Load a qualifying session to build the starting grid.")
@@ -312,6 +342,7 @@ with tabs[0]:
                         marker=dict(color=[team_colour(t) for t in top["Team"]], cornerradius=4),
                         text=[f"{v:.1f}%" for v in top["Win %"]], textposition="outside",
                         hovertemplate="%{y}: %{x:.1f}% wins<extra></extra>"))
+                    fig.update_xaxes(range=[0, float(top["Win %"].max()) * 1.18 + 1])     # room for the labels
                     show(base_layout(fig, "Win probability (top 10)", 420, hovermode="closest",
                                      xaxis_title="%", showlegend=False))
                 with right:
@@ -319,8 +350,8 @@ with tabs[0]:
                     order = s["Driver"].tolist()
                     dist = dist.loc[order]
                     fig = go.Figure(go.Heatmap(
-                        z=dist.values * 100, x=dist.columns, y=dist.index, colorscale="Blues",
-                        zmin=0, zmax=100, colorbar=dict(title="%"),
+                        z=dist.values * 100, x=dist.columns, y=dist.index, colorscale=T.HEAT,
+                        zmin=0, zmax=max(40.0, float(dist.values.max() * 100)), colorbar=dict(title="%"),
                         hovertemplate="%{y} finishes %{x}: %{z:.1f}%<extra></extra>"))
                     fig.update_yaxes(autorange="reversed")
                     show(base_layout(fig, "Finishing position distribution", 420, hovermode="closest"))
@@ -345,7 +376,7 @@ with tabs[0]:
 
 
 # ═════════════════════════════ 2. WHAT-IF ═══════════════════════════════════
-with tabs[1]:
+with TAB["whatif"]:
     st.subheader("What-If: change one strategy, keep the luck identical")
     st.caption("Both scenarios replay the exact same random draws (lap noise, Safety Car timing, "
                "overtake rolls) — *common random numbers*. Any difference is caused by the strategy, "
@@ -414,7 +445,7 @@ with tabs[1]:
 
 
 # ═════════════════════════════ 3. UNDERCUT ══════════════════════════════════
-with tabs[2]:
+with TAB["undercut"]:
     st.subheader("Undercut calculator")
     st.caption("If the chasing car pits now, does it come out ahead once the leader responds? "
                "The verdict uses the worst case (leader reacts next lap).")
@@ -451,9 +482,11 @@ with tabs[2]:
 
         r = undercut_analysis(chaser, leader, gap, lap, cfg, new_c, lead_c, sc_on)
         if r["verdict"] == "BOX BOX":
-            st.success(f"### BOX BOX — {chaser.driver} should pit now", icon="🟢")
+            T.pit_board("Box box", f"{chaser.driver} comes out close enough to pass {leader.driver} even if "
+                        f"{leader.driver} answers on the next lap.", tone=T.YELLOW)
         else:
-            st.error(f"### STAY OUT — the undercut doesn't work here", icon="🔴")
+            T.pit_board("Stay out", f"The undercut on {leader.driver} does not work from {gap:.1f} s back.",
+                        tone=T.PAINT)
         v2, v3, v4 = st.columns(3)
         v2.metric("Worst-case min gap", f"{r['min_gap']:.2f} s",
                   f"needs < {VERDICT_GAP} s", delta_color="off", delta_arrow="off")
@@ -468,7 +501,7 @@ with tabs[2]:
 
         fig = go.Figure()
         styles = {"Stay out": (NEUTRAL, "dot"), WORST_CASE: (BAD, "solid"),
-                  "Leader reacts in 3 laps": ("#f5a524", "solid"), "Leader never reacts": (GOOD, "dash")}
+                  "Leader reacts in 3 laps": (T.YELLOW, "solid"), "Leader never reacts": (GOOD, "dash")}
         for name, curve in r["curves"].items():
             col, dash = styles[name]
             fig.add_trace(go.Scatter(x=r["laps"], y=curve, name=name, mode="lines+markers",
@@ -495,8 +528,8 @@ with tabs[2]:
         with st.expander("How it works"):
             st.markdown(
                 "- **Module 1** predicts every lap for both cars in every scenario (one batched call).\n"
-                "- Pit loss: 23.5 s green, 17 s under SC. Deterministic, so the same inputs always give "
-                "the same verdict.\n"
+                "- Pit loss: measured per circuit from real green-flag stops (cheaper under a Safety Car). "
+                "Deterministic, so the same inputs always give the same verdict.\n"
                 "- **Dirty air:** whoever runs < 2 s behind loses 0.35 s/lap (domain knowledge, not learned).\n"
                 "- **Module 2** is asked for P(overtake) only on laps inside the 1 s DRS window, "
                 "with each car's *actual* tyre state that lap.\n"
@@ -505,78 +538,104 @@ with tabs[2]:
 
 
 # ═════════════════════════════ 4. STINT OPTIMIZER ═══════════════════════════
-with tabs[3]:
-    st.subheader("Stint optimizer — the 1-stop U-curve")
-    st.caption("Pit too early and the second stint is long and slow; too late and you crawl on dead tyres. "
-               "The total time is U-shaped; the bottom is the optimal lap.")
+with TAB["stint"]:
+    st.subheader("How many stops, and when")
+    st.caption("Every pit lap and every legal compound order for one, two and three stops, on a clear track. "
+               "How hard a day is on tyres is only known roughly before the race, so the answer comes with a "
+               "probability.")
     if not models_ready():
         need_models()
     else:
+        from tools.circuit_profiles import profile_for
         from tools.stint_optimizer import compare_strategies
         teams = shared.get_known_teams()
-        from tools.circuit_profiles import profile_for
-        so_circuit = circuit_picker(st, "so_circuit")
+        c = st.columns([2, 1, 1])
+        so_circuit = circuit_picker(c[0], "so_circuit")
         so_prof = profile_for(so_circuit) or {}
-        c = st.columns(5)
-        laps_ = c[0].number_input("Race laps", 20, 80, int(so_prof.get("laps", 57)), key=f"so_l_{so_circuit}")
-        team = c[1].selectbox("Team", teams, teams.index("Red Bull Racing") if "Red Bull Racing" in teams else 0,
-                              key="so_t")
-        tt = c[2].slider("Track °C", 15, 55, 35, key="so_tt")
-        at = c[3].slider("Air °C", 10, 40, 25, key="so_at")
-        pc = c[4].number_input("Pit loss (s)", 15.0, 35.0, float(so_prof.get("pit_loss_s") or shared.PIT_COST_GREEN),
+        laps_ = c[1].number_input("Race laps", 20, 80, int(so_prof.get("laps", 57)), key=f"so_l_{so_circuit}")
+        pc = c[2].number_input("Pit loss (s)", 15.0, 35.0, float(so_prof.get("pit_loss_s") or shared.PIT_COST_GREEN),
                                0.5, key=f"so_pc_{so_circuit}", help="Measured per circuit from real green-flag stops.")
-        df = compare_strategies(int(laps_), team, {"track_temp": tt, "air_temp": at, "circuit": so_circuit},
-                                pit_cost=pc)
+        tt, at, team = 35.0, 25.0, teams[0]
+        if {"TrackTemp", "TeamEncoded"} & set(shared.model_features(get_models()[0], shared.LAP_FEATURES)):
+            c = st.columns(3)                         # only older models use these inputs
+            team = c[0].selectbox("Team", teams, key="so_t")
+            tt = c[1].slider("Track °C", 15, 55, 35, key="so_tt")
+            at = c[2].slider("Air °C", 10, 40, 25, key="so_at")
 
-        best = df.iloc[0]
-        st.markdown(f"#### Best 1-stop: {best['Strategy']}")
-        k2, k3 = st.columns(2)
-        k2.metric("Optimal pit lap", f"L{best['Optimal pit lap']}", best["Window (±1 s)"], delta_color="off", delta_arrow="off")
-        pair = lambda st_: frozenset(st_.split(" → "))
-        others = df[df["Strategy"].map(pair) != pair(best["Strategy"])]
-        k3.metric("Margin over next compound pair", f"{others['Gap to best (s)'].iloc[0]:.2f} s",
-                  help="SOFT→HARD and HARD→SOFT (with the stop at the mirrored lap) cost the same in the "
-                       "V3 tyre model: fuel is identical for every plan, so only stint lengths matter. "
-                       "Teams usually start on the softer tyre for launch grip — something the model "
-                       "does not know.")
+        o = cached_outlook(int(laps_), so_circuit, float(pc), float(tt), float(at))
+        exp = o["expected"]
+        best = exp.loc[exp["Total Δ (s)"].idxmin()]
+        runner = exp[exp["Stops"] != best["Stops"]].sort_values("Total Δ (s)").iloc[0]
+        words = {1: "One stop", 2: "Two stops", 3: "Three stops"}
+        p = o["p_best"].get(int(best["Stops"]), 1.0)
+        why = (f"{best['Strategy']}, stopping on {best['Pit laps'].replace(', ', ' and ')} — "
+               f"{runner['Gap to best (s)']:.1f} s faster than the best {words[int(runner['Stops'])].lower().replace(' ', '-')} plan.")
+        ctx = (f"The fastest plan on {round(p * 100)} % of the days this circuit can throw at you "
+               f"(tyres lose {o['deg_rate']:.3f} ± {o['deg_sd']:.3f} s per lap of age here).") if o["deg_rate"] else ""
+        T.pit_board(words[int(best["Stops"])], why, ctx, tone=T.YELLOW)
 
-        fig = go.Figure()
-        for _, row in df.iterrows():
-            cur = row["_result"]["curve"]
-            c1, c2 = row["Strategy"].split(" → ")
-            is_best = row.name == 0
-            fig.add_trace(go.Scatter(
-                x=cur["PitLap"], y=cur["Total"] - df["Total Δ (s)"].min(), name=row["Strategy"],
-                mode="lines", line=dict(width=3 if is_best else 2, color=COMPOUND_COLOURS[c1],
-                                        dash="solid" if c2 == "HARD" else "dot" if c2 == "MEDIUM" else "dash")))
-        fig.update_yaxes(range=[-1, 25])
-        show(base_layout(fig, "Time lost vs best strategy, by pit lap", 440,
-                         xaxis_title="Pit lap", yaxis_title="Seconds vs best"))
-        st.caption("Line colour = first tyre, line style = second tyre (solid HARD, dotted MEDIUM, dashed SOFT).")
-        st.dataframe(df.drop(columns="_result"), hide_index=True, width="stretch")
+        left, right = st.columns([3, 2])
+        with left:
+            st.dataframe(exp[["Stops", "Strategy", "Pit laps", "Total Δ (s)", "Gap to best (s)"]],
+                         hide_index=True, width="stretch")
+            if len(o["by_rate"]):
+                by = o["by_rate"]
+                fig = go.Figure()
+                for n, colour in ((2, T.YELLOW), (3, T.PURPLE)):
+                    if f"{n}-stop" in by:
+                        fig.add_trace(go.Scatter(x=by["Degradation (s/lap)"], y=by[f"{n}-stop"] - by["1-stop"],
+                                                 name=f"{words[n]} vs one stop", mode="lines+markers",
+                                                 line=dict(color=colour, width=3), marker=dict(size=7)))
+                fig.add_hline(0, line=dict(color=T.NEUTRAL, width=1))
+                fig.add_vline(o["deg_rate"], line=dict(color=T.NEUTRAL, dash="dot"),
+                              annotation_text="usual here", annotation_font_color=T.MUTED)
+                show(base_layout(fig, "More stops pay off when tyres degrade faster", 360,
+                                 xaxis_title="Degradation today (s per lap of tyre age)",
+                                 yaxis_title="Seconds vs the best one-stop"))
+                st.caption("Each dot is an equally likely day at this circuit. Below zero, the extra stop is "
+                           "faster than staying on one stop.")
+        with right:
+            real = cached_real_stops()
+            here = real[real["Race"].map(shared.circuit_name) == so_circuit] if real is not None and so_circuit else None
+            if here is not None and len(here):
+                st.markdown("**What the field really did here**")
+                tab = (here.assign(n=here["stops"].clip(upper=3))
+                           .pivot_table(index="Season", columns="n", values="Driver", aggfunc="count", fill_value=0))
+                tab = tab.reindex(columns=sorted(set(tab.columns) | {1, 2, 3}), fill_value=0)
+                tab = tab.rename(columns={0: "No stop", 1: "1 stop", 2: "2 stops", 3: "3 or more"})
+                tab["Stops under SC"] = here.groupby("Season")["sc_stops"].sum()
+                st.dataframe(tab.reset_index().astype({"Season": str}), hide_index=True, width="stretch")
+                st.caption("Finishers by number of tyre stops (red-flag changes are free and not counted). "
+                           "A Safety Car makes a stop cheap and adds stops the plan did not have.")
+            T.note("The search assumes a clear track and drivers who push the same on any plan. Real teams also "
+                   "weigh traffic after the stop and tyre management, and where nobody can pass (Monaco) track "
+                   "position beats tyre life. Checked against 36 real races, one at a time and never seen in "
+                   "training: the size of the gap ranks races well once the day's degradation is known, but the "
+                   "tool still favours one stop by a few seconds — read a small margin as a toss-up.")
 
-        with st.expander("Why is this the optimum? Lap-by-lap degradation of the best strategy"):
-            lt = best["_result"]["laps"]
-            lt = lt[lt["PitLap"] == best["Optimal pit lap"]]
-            fig = go.Figure(go.Scatter(
-                x=lt["LapNumber"], y=lt["Delta"], mode="markers",
-                marker=dict(size=8, color=[COMPOUND_COLOURS[shared.COMPOUND_NAMES[int(v)]]
-                                           for v in lt["CompoundEncoded"]],
-                            line=dict(width=1, color="#444")),
-                hovertemplate="Lap %{x}: +%{y:.2f} s<extra></extra>"))
-            fig.add_vline(best["Optimal pit lap"] + 0.5, line=dict(dash="dot", color=NEUTRAL))
-            show(base_layout(fig, "Predicted LapDelta (s above the driver's best)", 320,
-                             hovermode="closest", xaxis_title="Lap", yaxis_title="LapDelta (s)"))
-            if model_info()["version"] != "V2":
-                st.caption("V3 model: deltas are fuel-corrected, so this is tyre performance only — each "
-                           "stint should start low and rise. The optimiser trades that rise against the pit loss.")
-            else:
-                st.caption("V2 model: deltas still contain fuel, and fuel is confounded with the compound "
-                           "(softs run early, on a heavy car). Retrain with `python -m tools.train_models`.")
+        with st.expander("The one-stop sweep: total time by pit lap"):
+            df = compare_strategies(int(laps_), team, {"track_temp": tt, "air_temp": at, "circuit": so_circuit},
+                                    pit_cost=pc)
+            fig = go.Figure()
+            for _, row in df.iterrows():
+                cur = row["_result"]["curve"]
+                c1, c2 = row["Strategy"].split(" → ")
+                fig.add_trace(go.Scatter(
+                    x=cur["PitLap"], y=cur["Total"] - df["Total Δ (s)"].min(), name=row["Strategy"],
+                    mode="lines", line=dict(width=3 if row.name == 0 else 2, color=COMPOUND_COLOURS[c1],
+                                            dash="solid" if c2 == "HARD" else "dot" if c2 == "MEDIUM" else "dash")))
+            fig.update_yaxes(range=[-1, 25])
+            show(base_layout(fig, "Time lost vs the best one-stop, by pit lap", 420,
+                             xaxis_title="Pit lap", yaxis_title="Seconds vs best"))
+            st.caption("Pit too early and the second stint is long and slow; too late and you crawl on dead "
+                       "tyres. Line colour = first tyre, line style = second tyre (solid HARD, dotted MEDIUM, "
+                       "dashed SOFT). Two orders of the same pair cost the same: fuel is identical for every "
+                       "plan, so only stint lengths matter.")
+            st.dataframe(df.drop(columns="_result"), hide_index=True, width="stretch")
 
 
 # ═════════════════════════════ 5. QUALY → RACE ══════════════════════════════
-with tabs[4]:
+with TAB["qualy"]:
     st.subheader("Qualifying → race pace")
     st.caption("Qualifying time + fuel load + switch from SOFT to the race tyre + average degradation "
                "over the first stint. Compared against the actual result when it's available.")
@@ -647,15 +706,21 @@ with tabs[4]:
 
 
 # ═════════════════════════════ 6. TELEMETRY CLASH ═══════════════════════════
-with tabs[5]:
-    st.subheader("Telemetry clash — where is the lap time?")
-    st.caption("Fastest laps of two drivers resampled onto the same distance grid. Cumulative time delta, "
-               "speed traces and a corner-by-corner breakdown. No ML needed — pure signal processing.")
-    year, gp = event_picker("tc")
+with TAB["clash"]:
+    st.subheader("Telemetry — where is the lap time?")
+    st.caption("The fastest laps of two drivers on the same distance grid: where one pulls away, the speed "
+               "traces and a corner-by-corner breakdown. No model here, only signal processing.")
+    year, gp = event_picker("tc", kind="telemetry")
     c = st.columns(3)
-    session_type = c[0].selectbox("Session", ["Q", "R", "SQ", "FP1", "FP2", "FP3"])
-    da = c[1].text_input("Driver A", "VER").upper()
-    db = c[2].text_input("Driver B", "NOR").upper()
+    if has_fastf1_cache():
+        session_type = c[0].selectbox("Session", ["Q", "R", "SQ", "FP1", "FP2", "FP3"])
+        da = c[1].text_input("Driver A", "VER").upper()
+        db = c[2].text_input("Driver B", "LEC").upper()
+    else:                                            # demo bundle: the laps it ships
+        session_type = c[0].selectbox("Session", ["Q"])
+        have = demo_data.telemetry_drivers(year, gp, session_type) or ["VER", "LEC"]
+        da = c[1].selectbox("Driver A", have, have.index("VER") if "VER" in have else 0)
+        db = c[2].selectbox("Driver B", have, have.index("LEC") if "LEC" in have else min(1, len(have) - 1))
     if st.button("Compare", type="primary", key="tc_go"):
         st.session_state["tc_key"] = (year, gp, session_type, da, db)
     if "tc_key" in st.session_state:
@@ -677,7 +742,11 @@ with tabs[5]:
                         help="Cumulative delta at the line minus the official lap-time difference. "
                              "A pipeline sanity check: the endpoint is pinned by construction, "
                              "the shape in between is what carries information.")
-            st.pyplot(plot_clash(res), width="stretch")
+            with plt.style.context("dark_background"), plt.rc_context(
+                    {"figure.facecolor": T.ASPHALT, "axes.facecolor": T.ASPHALT, "savefig.facecolor": T.ASPHALT,
+                     "axes.edgecolor": T.LINE, "grid.color": T.LINE, "text.color": T.PAINT,
+                     "axes.labelcolor": T.MUTED, "xtick.color": T.MUTED, "ytick.color": T.MUTED}):
+                st.pyplot(plot_clash(res), width="stretch")
             st.caption("Sharp, short spikes in slow corners are mostly an **alignment artefact**: each car's "
                        "Distance channel is integrated from its own speed trace, so the same physical point can "
                        "sit a few metres apart. At 90 km/h, 5 m ≈ 200 ms. Read the trend between corners, "
@@ -696,17 +765,17 @@ with tabs[5]:
 
 
 # ═════════════════════════════ 7. RACE ENGINEER ═════════════════════════════
-with tabs[6]:
-    st.subheader("Race Engineer — the pit-wall call at any lap of a real race")
-    st.caption("Pick a race, a driver and a lap: the engineer sees only what had happened when that driver "
-               "crossed the line (the same feed the live window gets), races every option to the flag on the "
-               "same random draws, and makes the call. Then compare it with what the team really did.")
+with TAB["engineer"]:
+    st.subheader("The pit-wall call at any lap of a real race")
+    st.caption("Pick a race, a driver and a lap. The engineer sees only what had happened when that driver "
+               "crossed the line, races every option to the flag on the same simulated races, and makes the "
+               "call. Then compare it with what the team really did.")
     laps_df = cached_laps()
     if not models_ready():
         need_models()
     elif laps_df is None:
-        st.warning(f"Needs the lap Parquet (`{os.path.relpath(LAPS_PATH, shared.REPO_ROOT)}`) — "
-                   "`python -m tools.export_cache`.", icon="🧰")
+        st.warning("Needs the lap Parquet (`data/laps_2022_2025.parquet`) — `python -m tools.export_cache`, "
+                   "or the demo bundle in `demo/`.", icon="🧰")
     else:
         from tools.race_engineer import MIN_CALL_LAP
         from tools.race_engine import actual_result
@@ -733,17 +802,30 @@ with tabs[6]:
                 st.info("No call at this lap (the engineer needs a few laps of pace first).")
             else:
                 h = call["headline"]
-                colour = NEUTRAL if h.startswith("STAY") else "#f5a524"
-                st.markdown(f"<div style='font-size:1.5rem;font-weight:800;color:{colour}'>{h}</div>",
-                            unsafe_allow_html=True)
                 st_ = call["standings"]
                 me = st_[st_.Driver == driver]
                 ty = call.get("tyres") or {}
-                st.caption(f"End of lap {call['lap']}/{call['total_laps']} · {driver} "
-                           f"P{int(me.Pos.iloc[0]) if len(me) else '?'} · {ty.get('compound', '?').title()}, "
-                           f"{ty.get('age', 1) - 1} laps old · "
-                           f"{'2-compound rule ✓' if ty.get('rule_met') else '2-compound rule still to meet'}"
-                           f" · {len(call.get('estimated') or [])} cars estimated (not at the line yet)")
+                verdict, _, reason = h.partition(" — ")
+                deg = call.get("degradation")
+                today = ""
+                if deg:
+                    drift = deg["mean"] - deg["prior_mean"]
+                    how = "as usual here" if abs(drift) < 0.01 else ("harder on tyres than usual" if drift > 0
+                                                                     else "easier on tyres than usual")
+                    today = (f"Today is {how}: {deg['mean']:.3f} ± {deg['sd']:.3f} s lost per lap of tyre age "
+                             f"(this circuit: {deg['prior_mean']:.3f}), from {deg['n_laps']} clean laps so far.")
+                plan = (call.get("rival_plans") or {}).get(driver) or []
+                plan_txt = " then ".join(f"lap {l_} for {c_.title()}s" for l_, c_ in plan)
+                if h.startswith("STAY"):
+                    reason = (f"Keep to the plan: box on {plan_txt}." if plan
+                              else "No more stops: these tyres go to the flag.")
+                else:
+                    reason = reason[:1].upper() + reason[1:]
+                T.pit_board(verdict, reason,
+                            f"End of lap {call['lap']} of {call['total_laps']}. {driver} is "
+                            f"P{int(me.Pos.iloc[0]) if len(me) else '?'} on {ty.get('compound', '?').title()}s, "
+                            f"{ty.get('age', 1) - 1} laps old. {today}",
+                            tone=T.PAINT if h.startswith("STAY") else T.YELLOW)
 
                 # what the team really did after this lap
                 r = laps_df[(laps_df.Season == season) & (laps_df.Race == race) & (laps_df.Driver == driver)]
@@ -761,7 +843,8 @@ with tabs[6]:
                     team = "made no more stops"
                 fin = res.get(driver)
                 k = st.columns(3)
-                k[0].metric("Engineer", h.split(" — ")[0])
+                k[0].metric("The engineer's plan", ("Box lap " + ", ".join(str(l_) for l_, _ in plan)) if plan
+                            else "No more stops")
                 k[1].metric("The team", team.split(" (")[0].replace("boxed at the end of", "box").capitalize())
                 k[2].metric("Real result", f"P{int(fin)}" if pd.notna(fin) else "DNF")
                 st.caption(f"In reality {driver} {team}.")
@@ -781,9 +864,8 @@ with tabs[6]:
                     if a:
                         st.info(f"Undercut check on {a['target']} ({a['gap']:.1f} s ahead): **{a['verdict']}** · "
                                 f"P(pass) {a['p_overtake']:.0%}")
-                    st.caption("Known biases: one-stop strategies look too good at high-degradation circuits "
-                               "(\"NO MORE STOPS\" in Bahrain, where everyone really stopped twice); rivals follow "
-                               "an assumed default plan; dry races only.")
+                    T.note("Every car, rivals included, is given the plan that is fastest to the flag on a clear "
+                           "track at today's degradation; real teams also react to each other. Dry races only.")
                 with right:
                     st.markdown("**Timing at the end of the lap** (~ = estimated)")
                     plans = call.get("rival_plans") or {}
@@ -793,6 +875,6 @@ with tabs[6]:
                         "Gap": ["LEADER" if i == 0 else f"+{g:.1f}" for i, g in enumerate(st_.Gap)],
                         "Tyre": [f"{c_[0]} ({int(a_)})" for c_, a_ in zip(st_.Compound, st_.TyreAge)],
                         "Stops": st_.Stops.astype(int),
-                        "Next stop (assumed)": [" · ".join(f"L{l_}→{c_[0]}" for l_, c_ in plans.get(d, [])) or "—"
+                        "Stops to come (assumed)": [" · ".join(f"L{l_}→{c_[0]}" for l_, c_ in plans.get(d, [])) or "—"
                                                 for d in st_.Driver]})
                     st.dataframe(tower, hide_index=True, width="stretch", height=560)

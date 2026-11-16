@@ -1,9 +1,49 @@
+# "Tarmac and paint": a dark asphalt base, pit-board yellow for what you can act on,
+# tyre-compound colours for data. Fonts are bundled (static/fonts, SIL OFL) so the look is the
+# same offline and on the public demo.
 [theme]
 base = "dark"
-primaryColor = "#E10600"
-backgroundColor = "#15151E"
-secondaryBackgroundColor = "#1F1F2B"
-textColor = "#F0F0F0"
+primaryColor = "#FFD12E"
+backgroundColor = "#131A22"
+secondaryBackgroundColor = "#1B2530"
+textColor = "#EDF1F4"
+borderColor = "#2B3947"
+baseRadius = "0.3rem"
+font = "Barlow, 'Segoe UI', sans-serif"
+headingFont = "'Barlow Condensed', Barlow, sans-serif"
+
+[[theme.fontFaces]]
+family = "Barlow"
+url = "app/static/fonts/barlow-latin-400-normal.woff2"
+weight = 400
+[[theme.fontFaces]]
+family = "Barlow"
+url = "app/static/fonts/barlow-latin-500-normal.woff2"
+weight = 500
+[[theme.fontFaces]]
+family = "Barlow"
+url = "app/static/fonts/barlow-latin-600-normal.woff2"
+weight = 600
+[[theme.fontFaces]]
+family = "Barlow"
+url = "app/static/fonts/barlow-latin-700-normal.woff2"
+weight = 700
+[[theme.fontFaces]]
+family = "Barlow Condensed"
+url = "app/static/fonts/barlow-condensed-latin-500-normal.woff2"
+weight = 500
+[[theme.fontFaces]]
+family = "Barlow Condensed"
+url = "app/static/fonts/barlow-condensed-latin-600-normal.woff2"
+weight = 600
+[[theme.fontFaces]]
+family = "Barlow Condensed"
+url = "app/static/fonts/barlow-condensed-latin-700-normal.woff2"
+weight = 700
 
 [server]
 headless = true
+enableStaticServing = true
+
+[browser]
+gatherUsageStats = false

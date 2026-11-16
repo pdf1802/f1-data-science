@@ -226,7 +226,7 @@ def live_estimate(laps: pd.DataFrame, prior_mean: float, prior_sd: float,
     # shows. So the noise variance is inflated by a design effect that starts high and comes down
     # as second stints appear (tyre age resets, the lap number does not). The two ends were set so
     # that the 80 % interval holds the race's final γ ~80 % of the time at every stage of the
-    # race, leave one race out (see the tyre_degradation notebook).
+    # race, leave one race out (see the degradation_by_circuit notebook).
     if design_effect is None:
         s_ = g.sort_values(["key", "LapNumber"])
         new_set = s_.groupby("key")["TyreLife"].diff() < 0                # the tyre got younger: a stop

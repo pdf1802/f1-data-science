@@ -49,9 +49,19 @@ def available() -> bool:
     return os.path.isfile(path("laps.parquet"))
 
 
+def has_fastf1_cache() -> bool:
+    """A local FastF1 cache with at least one season folder."""
+    from tools.shared import DEFAULT_CACHE_DIR
+    d = os.environ.get("F1_CACHE_DIR", DEFAULT_CACHE_DIR)
+    return os.path.isdir(d) and any(n.isdigit() for n in os.listdir(d))
+
+
 def forced() -> bool:
-    """F1_DEMO=1: use the bundle even if a cache exists (the public demo)."""
-    return os.environ.get("F1_DEMO", "") == "1"
+    """
+    Use the bundle without trying FastF1 first: F1_DEMO=1, or there is no local cache at all
+    (a fresh clone, the public demo) — no point waiting for a download that cannot happen.
+    """
+    return os.environ.get("F1_DEMO", "") == "1" or not has_fastf1_cache()
 
 
 def _same_event(df: pd.DataFrame, year: int, gp: str) -> pd.DataFrame:

@@ -47,3 +47,6 @@ data/
 
 # Training outputs (regenerate with python -m tools.train_models)
 models/*.json
+
+# Demo bundle (python -m tools.demo_data): small, committed on purpose
+!demo/models/*.pkl

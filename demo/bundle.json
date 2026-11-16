@@ -1,0 +1,7 @@
+{
+ "laps": "laps_2022_2025.parquet",
+ "models": "models",
+ "qualifying_events": 22,
+ "result_events": 22,
+ "telemetry_laps": 24
+}

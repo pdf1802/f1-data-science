@@ -1,5 +1,5 @@
 """
-Retrain Module 1 + Module 2 (V3.1) and write the artefacts the dashboard uses.
+Retrain Module 1 (V3.2) + Module 2 (V3.1) and write the artefacts the dashboard uses.
 
     python -m tools.train_models --laps data/laps_2022_2025.parquet   # recommended (no FastF1 needed)
     python -m tools.train_models --offline                           # every race found in the FastF1 cache

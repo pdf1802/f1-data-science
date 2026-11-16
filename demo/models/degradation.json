@@ -1,0 +1,427 @@
+{
+ "global": 0.058341002450818746,
+ "circuit_sd": 0.025557790178382632,
+ "race_sd": 0.02381289439106948,
+ "circuits": {
+  "Abu Dhabi": 0.061136050251132654,
+  "Australian": 0.05268403192287346,
+  "Austrian": 0.0598882368256254,
+  "Azerbaijan": 0.038874115165583124,
+  "Bahrain": 0.11384320267728854,
+  "Belgian": 0.08979410134630351,
+  "British": 0.03556917035120223,
+  "Italian": 0.04867608386348743,
+  "Japanese": 0.07092063614321611,
+  "Miami": 0.04720192988381871,
+  "Monaco": 0.04601573635871899,
+  "Saudi Arabian": 0.04225877085156296,
+  "Singapore": 0.0515709706237787
+ },
+ "races": {
+  "2022 Abu Dhabi Grand Prix": 0.06915615115877435,
+  "2022 Bahrain Grand Prix": 0.15644655091047763,
+  "2022 Belgian Grand Prix": 0.14479586425389804,
+  "2022 British Grand Prix": 0.0261809606812612,
+  "2022 Italian Grand Prix": 0.045631555801349574,
+  "2023 Abu Dhabi Grand Prix": 0.06151538590947855,
+  "2023 Australian Grand Prix": 0.05625887232823391,
+  "2023 Azerbaijan Grand Prix": 0.03815488121723202,
+  "2023 Bahrain Grand Prix": 0.10926285757034752,
+  "2023 British Grand Prix": 0.025188787754617463,
+  "2023 Italian Grand Prix": 0.06430854730518364,
+  "2023 Japanese Grand Prix": 0.11315563801530192,
+  "2023 Miami Grand Prix": 0.030288386473000983,
+  "2023 Saudi Arabian Grand Prix": 0.03203219483369165,
+  "2023 Singapore Grand Prix": 0.03741993911032443,
+  "2024 Abu Dhabi Grand Prix": 0.05642743711615457,
+  "2024 Australian Grand Prix": 0.0441982847735367,
+  "2024 Austrian Grand Prix": 0.06538055279946717,
+  "2024 Azerbaijan Grand Prix": 0.03958557694232864,
+  "2024 Bahrain Grand Prix": 0.10657296449753757,
+  "2024 Belgian Grand Prix": 0.062097277490759224,
+  "2024 Italian Grand Prix": 0.05627492527709372,
+  "2024 Miami Grand Prix": 0.03741472925393678,
+  "2024 Monaco Grand Prix": 0.046255798908624565,
+  "2024 Saudi Arabian Grand Prix": 0.04280305840045203,
+  "2024 Singapore Grand Prix": 0.05873006695463114,
+  "2025 Abu Dhabi Grand Prix": 0.0598716525942173,
+  "2025 Austrian Grand Prix": 0.05573909980034176,
+  "2025 Azerbaijan Grand Prix": 0.021982370611579302,
+  "2025 Bahrain Grand Prix": 0.13127278693187447,
+  "2025 Italian Grand Prix": 0.02009903640583212,
+  "2025 Japanese Grand Prix": 0.03960621581412533,
+  "2025 Miami Grand Prix": 0.06423266657328837,
+  "2025 Monaco Grand Prix": 0.0350759128547855,
+  "2025 Saudi Arabian Grand Prix": 0.037979816420511764,
+  "2025 Singapore Grand Prix": 0.05268573271663114
+ },
+ "fuel": {
+  "global": 0.052597887751204477,
+  "sd": 0.0031622776601683794,
+  "races": {
+   "2022 Abu Dhabi Grand Prix": 0.05082120099129585,
+   "2022 Bahrain Grand Prix": 0.06513575276066837,
+   "2022 Belgian Grand Prix": 0.05962401173692968,
+   "2022 British Grand Prix": 0.056429528372306935,
+   "2022 Italian Grand Prix": 0.05201159419734567,
+   "2023 Abu Dhabi Grand Prix": 0.056971314340236195,
+   "2023 Australian Grand Prix": 0.05353852407454335,
+   "2023 Azerbaijan Grand Prix": 0.052635949025230507,
+   "2023 Bahrain Grand Prix": 0.056225520240891565,
+   "2023 British Grand Prix": 0.052083025177653675,
+   "2023 Italian Grand Prix": 0.04481496816480407,
+   "2023 Japanese Grand Prix": 0.058248388895787324,
+   "2023 Miami Grand Prix": 0.05119408699734724,
+   "2023 Saudi Arabian Grand Prix": 0.053072645338021876,
+   "2023 Singapore Grand Prix": 0.05262612447973848,
+   "2024 Abu Dhabi Grand Prix": 0.05612715920036288,
+   "2024 Australian Grand Prix": 0.051088028279547594,
+   "2024 Austrian Grand Prix": 0.032045710729094054,
+   "2024 Azerbaijan Grand Prix": 0.05284966682099321,
+   "2024 Bahrain Grand Prix": 0.060983750846663236,
+   "2024 Belgian Grand Prix": 0.062260893320062245,
+   "2024 Italian Grand Prix": 0.05837665925763509,
+   "2024 Miami Grand Prix": 0.057194537220408626,
+   "2024 Monaco Grand Prix": 0.05260692679433848,
+   "2024 Saudi Arabian Grand Prix": 0.05267302897479027,
+   "2024 Singapore Grand Prix": 0.04870869888828117,
+   "2025 Abu Dhabi Grand Prix": 0.05333037937813081,
+   "2025 Austrian Grand Prix": 0.037224102720889225,
+   "2025 Azerbaijan Grand Prix": 0.056072174239105585,
+   "2025 Bahrain Grand Prix": 0.061777111528630364,
+   "2025 Italian Grand Prix": 0.05428042431159408,
+   "2025 Japanese Grand Prix": 0.06442655626130389,
+   "2025 Miami Grand Prix": 0.054922358395173294,
+   "2025 Monaco Grand Prix": 0.047844698556215134,
+   "2025 Saudi Arabian Grand Prix": 0.05598961658523681,
+   "2025 Singapore Grand Prix": 0.052304994318313765
+  }
+ },
+ "n_races": 36,
+ "race_table": [
+  {
+   "race": "2022 Abu Dhabi Grand Prix",
+   "circuit": "Abu Dhabi",
+   "n_laps": 618,
+   "deg": 0.07019,
+   "deg_se": 0.00855,
+   "fuel": 0.04861,
+   "fuel_se": 0.00353
+  },
+  {
+   "race": "2022 Bahrain Grand Prix",
+   "circuit": "Bahrain",
+   "n_laps": 526,
+   "deg": 0.16152,
+   "deg_se": 0.00822,
+   "fuel": 0.07693,
+   "fuel_se": 0.00307
+  },
+  {
+   "race": "2022 Belgian Grand Prix",
+   "circuit": "Belgian",
+   "n_laps": 346,
+   "deg": 0.15982,
+   "deg_se": 0.01245,
+   "fuel": 0.07939,
+   "fuel_se": 0.0053
+  },
+  {
+   "race": "2022 British Grand Prix",
+   "circuit": "British",
+   "n_laps": 315,
+   "deg": 0.02544,
+   "deg_se": 0.00668,
+   "fuel": 0.06392,
+   "fuel_se": 0.00442
+  },
+  {
+   "race": "2022 Italian Grand Prix",
+   "circuit": "Italian",
+   "n_laps": 385,
+   "deg": 0.04498,
+   "deg_se": 0.01099,
+   "fuel": 0.04608,
+   "fuel_se": 0.01006
+  },
+  {
+   "race": "2023 Abu Dhabi Grand Prix",
+   "circuit": "Abu Dhabi",
+   "n_laps": 561,
+   "deg": 0.06153,
+   "deg_se": 0.00448,
+   "fuel": 0.05836,
+   "fuel_se": 0.00178
+  },
+  {
+   "race": "2023 Australian Grand Prix",
+   "circuit": "Australian",
+   "n_laps": 224,
+   "deg": 0.06117,
+   "deg_se": 0.02791,
+   "fuel": 0.10957,
+   "fuel_se": 0.02441
+  },
+  {
+   "race": "2023 Azerbaijan Grand Prix",
+   "circuit": "Azerbaijan",
+   "n_laps": 254,
+   "deg": 0.02973,
+   "deg_se": 0.08148,
+   "fuel": 0.07735,
+   "fuel_se": 0.08057
+  },
+  {
+   "race": "2023 Bahrain Grand Prix",
+   "circuit": "Bahrain",
+   "n_laps": 557,
+   "deg": 0.10831,
+   "deg_se": 0.01086,
+   "fuel": 0.06454,
+   "fuel_se": 0.00479
+  },
+  {
+   "race": "2023 British Grand Prix",
+   "circuit": "British",
+   "n_laps": 338,
+   "deg": 0.02454,
+   "deg_se": 0.00594,
+   "fuel": 0.0513,
+   "fuel_se": 0.0039
+  },
+  {
+   "race": "2023 Italian Grand Prix",
+   "circuit": "Italian",
+   "n_laps": 422,
+   "deg": 0.06531,
+   "deg_se": 0.00601,
+   "fuel": 0.04103,
+   "fuel_se": 0.00221
+  },
+  {
+   "race": "2023 Japanese Grand Prix",
+   "circuit": "Japanese",
+   "n_laps": 472,
+   "deg": 0.11928,
+   "deg_se": 0.00907,
+   "fuel": 0.06627,
+   "fuel_se": 0.00377
+  },
+  {
+   "race": "2023 Miami Grand Prix",
+   "circuit": "Miami",
+   "n_laps": 488,
+   "deg": 0.02941,
+   "deg_se": 0.00543,
+   "fuel": 0.04981,
+   "fuel_se": 0.00314
+  },
+  {
+   "race": "2023 Saudi Arabian Grand Prix",
+   "circuit": "Saudi Arabian",
+   "n_laps": 412,
+   "deg": 0.02451,
+   "deg_se": 0.02042,
+   "fuel": 0.0664,
+   "fuel_se": 0.01675
+  },
+  {
+   "race": "2023 Singapore Grand Prix",
+   "circuit": "Singapore",
+   "n_laps": 272,
+   "deg": 0.02959,
+   "deg_se": 0.01772,
+   "fuel": 0.05279,
+   "fuel_se": 0.00769
+  },
+  {
+   "race": "2024 Abu Dhabi Grand Prix",
+   "circuit": "Abu Dhabi",
+   "n_laps": 589,
+   "deg": 0.0563,
+   "deg_se": 0.00398,
+   "fuel": 0.0576,
+   "fuel_se": 0.00205
+  },
+  {
+   "race": "2024 Australian Grand Prix",
+   "circuit": "Australian",
+   "n_laps": 546,
+   "deg": 0.0438,
+   "deg_se": 0.00515,
+   "fuel": 0.0494,
+   "fuel_se": 0.00334
+  },
+  {
+   "race": "2024 Austrian Grand Prix",
+   "circuit": "Austrian",
+   "n_laps": 774,
+   "deg": 0.06558,
+   "deg_se": 0.00449,
+   "fuel": 0.02662,
+   "fuel_se": 0.00162
+  },
+  {
+   "race": "2024 Azerbaijan Grand Prix",
+   "circuit": "Azerbaijan",
+   "n_laps": 416,
+   "deg": 0.04089,
+   "deg_se": 0.03222,
+   "fuel": 0.07872,
+   "fuel_se": 0.03206
+  },
+  {
+   "race": "2024 Bahrain Grand Prix",
+   "circuit": "Bahrain",
+   "n_laps": 648,
+   "deg": 0.10631,
+   "deg_se": 0.00451,
+   "fuel": 0.06578,
+   "fuel_se": 0.00239
+  },
+  {
+   "race": "2024 Belgian Grand Prix",
+   "circuit": "Belgian",
+   "n_laps": 353,
+   "deg": 0.06044,
+   "deg_se": 0.00583,
+   "fuel": 0.08874,
+   "fuel_se": 0.00523
+  },
+  {
+   "race": "2024 Italian Grand Prix",
+   "circuit": "Italian",
+   "n_laps": 530,
+   "deg": 0.05675,
+   "deg_se": 0.00597,
+   "fuel": 0.06273,
+   "fuel_se": 0.00275
+  },
+  {
+   "race": "2024 Miami Grand Prix",
+   "circuit": "Miami",
+   "n_laps": 349,
+   "deg": 0.03693,
+   "deg_se": 0.00529,
+   "fuel": 0.0618,
+   "fuel_se": 0.00317
+  },
+  {
+   "race": "2024 Monaco Grand Prix",
+   "circuit": "Monaco",
+   "n_laps": 212,
+   "deg": 0.08575,
+   "deg_se": 0.30545,
+   "fuel": 0.13888,
+   "fuel_se": 0.30893
+  },
+  {
+   "race": "2024 Saudi Arabian Grand Prix",
+   "circuit": "Saudi Arabian",
+   "n_laps": 299,
+   "deg": 0.05039,
+   "deg_se": 0.0889,
+   "fuel": 0.11301,
+   "fuel_se": 0.08961
+  },
+  {
+   "race": "2024 Singapore Grand Prix",
+   "circuit": "Singapore",
+   "n_laps": 664,
+   "deg": 0.05914,
+   "deg_se": 0.00569,
+   "fuel": 0.04324,
+   "fuel_se": 0.00375
+  },
+  {
+   "race": "2025 Abu Dhabi Grand Prix",
+   "circuit": "Abu Dhabi",
+   "n_laps": 447,
+   "deg": 0.05975,
+   "deg_se": 0.00743,
+   "fuel": 0.05416,
+   "fuel_se": 0.00336
+  },
+  {
+   "race": "2025 Austrian Grand Prix",
+   "circuit": "Austrian",
+   "n_laps": 617,
+   "deg": 0.0555,
+   "deg_se": 0.00568,
+   "fuel": 0.03182,
+   "fuel_se": 0.00187
+  },
+  {
+   "race": "2025 Azerbaijan Grand Prix",
+   "circuit": "Azerbaijan",
+   "n_laps": 420,
+   "deg": 0.02106,
+   "deg_se": 0.00557,
+   "fuel": 0.06146,
+   "fuel_se": 0.00394
+  },
+  {
+   "race": "2025 Bahrain Grand Prix",
+   "circuit": "Bahrain",
+   "n_laps": 365,
+   "deg": 0.13243,
+   "deg_se": 0.00613,
+   "fuel": 0.07482,
+   "fuel_se": 0.00377
+  },
+  {
+   "race": "2025 Italian Grand Prix",
+   "circuit": "Italian",
+   "n_laps": 423,
+   "deg": 0.01937,
+   "deg_se": 0.00381,
+   "fuel": 0.05625,
+   "fuel_se": 0.00342
+  },
+  {
+   "race": "2025 Japanese Grand Prix",
+   "circuit": "Japanese",
+   "n_laps": 500,
+   "deg": 0.03902,
+   "deg_se": 0.00325,
+   "fuel": 0.07585,
+   "fuel_se": 0.00311
+  },
+  {
+   "race": "2025 Miami Grand Prix",
+   "circuit": "Miami",
+   "n_laps": 383,
+   "deg": 0.06853,
+   "deg_se": 0.01196,
+   "fuel": 0.07752,
+   "fuel_se": 0.00986
+  },
+  {
+   "race": "2025 Monaco Grand Prix",
+   "circuit": "Monaco",
+   "n_laps": 492,
+   "deg": 0.02973,
+   "deg_se": 0.01664,
+   "fuel": 0.01678,
+   "fuel_se": 0.00808
+  },
+  {
+   "race": "2025 Saudi Arabian Grand Prix",
+   "circuit": "Saudi Arabian",
+   "n_laps": 442,
+   "deg": 0.03771,
+   "deg_se": 0.006,
+   "fuel": 0.06405,
+   "fuel_se": 0.00487
+  },
+  {
+   "race": "2025 Singapore Grand Prix",
+   "circuit": "Singapore",
+   "n_laps": 525,
+   "deg": 0.05304,
+   "deg_se": 0.01348,
+   "fuel": 0.04834,
+   "fuel_se": 0.01164
+  }
+ ]
+}
