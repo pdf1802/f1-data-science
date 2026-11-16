@@ -226,7 +226,7 @@ _demo = _ready and os.path.abspath(shared.resolve_model_dir()).startswith(os.pat
 _chips.append(("Mode", "demo bundle" if _demo or not has_fastf1_cache() else "your local data", "warn" if _demo else ""))
 T.header("F1 Pit Wall",
          "Race strategy from real lap data: a tyre model and an overtaking model, a lap-by-lap race engine "
-         "checked against 36 real races, and an engineer that makes the call.", _chips)
+         "checked against 35 real races, and an engineer that makes the call.", _chips)
 if _ready and not _info["sanity"]["passed"]:
     with st.expander("The tyre model fails a physics check — tyre and stint numbers are not trustworthy"):
         for _k, _v in _info["sanity"]["checks"].items():
@@ -619,9 +619,9 @@ with TAB["stint"]:
                            "A Safety Car makes a stop cheap and adds stops the plan did not have.")
             T.note("The search assumes a clear track and drivers who push the same on any plan. Real teams also "
                    "weigh traffic after the stop and tyre management, and where nobody can pass (Monaco) track "
-                   "position beats tyre life. Checked against 36 real races, one at a time and never seen in "
-                   "training: the size of the gap ranks races well once the day's degradation is known, but the "
-                   "tool still favours one stop by a few seconds — read a small margin as a toss-up.")
+                   "position beats tyre life. Checked against 34 real races never seen in training: it gets "
+                   "Bahrain right, but elsewhere it still favours one stop by a few seconds and the probability "
+                   "above is no better than the base rate before the race — read a small margin as a toss-up.")
 
         with st.expander("The one-stop sweep: total time by pit lap"):
             df = compare_strategies(int(laps_), team, {"track_temp": tt, "air_temp": at, "circuit": so_circuit},

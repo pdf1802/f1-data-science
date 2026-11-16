@@ -30,7 +30,7 @@ How a call is made
 Every call has the same keys whether the driver is running or not (see CALL_KEYS).
 
 The engine behind it is backtested (tools/backtest.py): from 40 % distance it
-beats "the order stays the same" in 75 % of 36 real races.
+beats "the order stays the same" in 71 % of 35 real races (leave one race out).
 
 Clocks. f1-race-replay sends lap end times on the FastF1 session clock
 (`end_time_s`, `line_time_s`) and, when it can align them, on the replay clock

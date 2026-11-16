@@ -19,7 +19,7 @@ Nothing is downloaded at run time: FastF1 stays in offline mode and, with no loc
 
 | Tab | In the demo |
 |---|---|
-| Race engineer, How many stops, Undercut, What-if | Everything (36 dry races, 2022–2025) |
+| Race engineer, How many stops, Undercut, What-if | Everything (35 dry races, 2022–2025) |
 | Race simulator, Qualifying → race | The qualifying sessions in `demo/qualifying.parquet` |
 | Telemetry | The fastest laps in `demo/telemetry.parquet` (a few sessions, top 8 drivers) |
 

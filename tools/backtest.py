@@ -240,7 +240,7 @@ def summarise_stop_counts(df: pd.DataFrame, n_boot: int = 2000, seed: int = 0) -
     How good is the optimizer's one-vs-two-stop answer, at each level of knowledge of the day
     (before the race / at `frac` of the distance / hindsight)? Races in MANDATED_STOPS are left out.
     Per level: agreement with the field's majority at "which is faster", the same for the trivial
-    "always one stop", the AUC of the gap with a bootstrap 95 % interval (36 races are few: the
+    "always one stop", the AUC of the gap with a bootstrap 95 % interval (some 35 races are few: the
     intervals are wide and overlap), and the same without Bahrain — the circuit the fix was aimed at.
     The pre-race probability is scored with the Brier score against the base rate.
     """

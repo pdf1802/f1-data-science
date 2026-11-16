@@ -1,39 +1,35 @@
 {
-  "trained_at": "2026-11-15T18:56:51",
+  "trained_at": "2026-11-16T12:48:39",
   "version": "V3.2",
   "source": "Parquet data/laps_2022_2025.parquet",
-  "fuel_s_per_lap": 0.052597887751204477,
+  "fuel_s_per_lap": 0.05756037252455829,
   "degradation": {
-    "global": 0.058341002450818746,
-    "circuit_sd": 0.025557790178382632,
-    "race_sd": 0.02381289439106948,
+    "global": 0.05753295666911329,
+    "circuit_sd": 0.026265601377369194,
+    "race_sd": 0.023554396138790318,
     "circuits": {
-      "Abu Dhabi": 0.061136050251132654,
-      "Australian": 0.05268403192287346,
-      "Austrian": 0.0598882368256254,
-      "Azerbaijan": 0.038874115165583124,
-      "Bahrain": 0.11384320267728854,
-      "Belgian": 0.08979410134630351,
-      "British": 0.03556917035120223,
-      "Italian": 0.04867608386348743,
-      "Japanese": 0.07092063614321611,
-      "Miami": 0.04720192988381871,
-      "Monaco": 0.04601573635871899,
-      "Saudi Arabian": 0.04225877085156296,
-      "Singapore": 0.0515709706237787
+      "Abu Dhabi": 0.06102879600792433,
+      "Australian": 0.052202041436833664,
+      "Austrian": 0.05968551991241403,
+      "Azerbaijan": 0.03801489242889162,
+      "Bahrain": 0.11447564658077174,
+      "Belgian": 0.09024320861491397,
+      "British": 0.034791386319957866,
+      "Italian": 0.048392362373944155,
+      "Japanese": 0.07093905714549105,
+      "Miami": 0.04041489232039356,
+      "Monaco": 0.0448020159092013,
+      "Saudi Arabian": 0.04162871343078458,
+      "Singapore": 0.051309907613477805
     },
-    "n_races": 36
+    "n_races": 35
   },
   "clean_air_gap_s": 2.0,
-  "races_used": 36,
+  "races_used": 35,
   "wet_races_excluded": [
     [
       2022,
       "Japanese Grand Prix"
-    ],
-    [
-      2022,
-      "Monaco Grand Prix"
     ],
     [
       2022,
@@ -56,6 +52,16 @@
       "Belgian Grand Prix"
     ]
   ],
+  "bad_data_races_excluded": [
+    [
+      2022,
+      "Monaco Grand Prix"
+    ],
+    [
+      2025,
+      "Miami Grand Prix"
+    ]
+  ],
   "failed_sessions": [],
   "circuits": [
     "Abu Dhabi",
@@ -74,43 +80,43 @@
   ],
   "physics_reference": {
     "fuel_and_evolution_per_lap": {
-      "estimate": 0.0497,
+      "estimate": 0.0495,
       "ci95": 0.0075
     },
     "fresh_MEDIUM_vs_SOFT": {
-      "estimate": 0.4231,
-      "ci95": 0.286
+      "estimate": 0.4222,
+      "ci95": 0.2884
     },
     "fresh_HARD_vs_SOFT": {
-      "estimate": 0.3833,
-      "ci95": 0.2778
+      "estimate": 0.3821,
+      "ci95": 0.2786
     },
     "deg_SOFT_per_lap": {
       "estimate": 0.0773,
       "ci95": 0.031
     },
     "deg_MEDIUM_per_lap": {
-      "estimate": 0.0483,
-      "ci95": 0.0126
+      "estimate": 0.0484,
+      "ci95": 0.013
     },
     "deg_HARD_per_lap": {
-      "estimate": 0.0448,
-      "ci95": 0.0093
+      "estimate": 0.045,
+      "ci95": 0.0095
     }
   },
   "deg_tail": {
     "cap": {
       "SOFT": 19,
-      "MEDIUM": 28,
-      "HARD": 34
+      "MEDIUM": 29,
+      "HARD": 35
     },
     "slope": {
-      "SOFT": 0.07731924658057143,
-      "MEDIUM": 0.0483304858014628,
-      "HARD": 0.044845129953869016
+      "SOFT": 0.07729459851642388,
+      "MEDIUM": 0.04839542889428365,
+      "HARD": 0.04500245245616624
     },
     "quantile": 0.9,
-    "ref_deg": 0.058341002450818746
+    "ref_deg": 0.05753295666911329
   },
   "module1": {
     "features": [
@@ -120,10 +126,10 @@
       "DegRate",
       "Wear"
     ],
-    "n_laps": 17449,
-    "grouped_MAE": 0.632268544589616,
-    "random_split_MAE": 0.491199579419361,
-    "predict_median_MAE": 0.6653197866499535,
+    "n_laps": 17061,
+    "grouped_MAE": 0.6086184086355803,
+    "random_split_MAE": 0.473752487799784,
+    "predict_median_MAE": 0.6644851335787215,
     "sanity": {
       "fresh SOFT fastest": true,
       "SOFT slower at age 20 than age 2": true,
@@ -133,25 +139,35 @@
       "fresh HARD not >0.15 s faster than MEDIUM": true,
       "responds to the degradation rate (\u2265 50 % of the change)": true
     },
-    "deg_response": 0.7512325350948154,
+    "deg_response": 0.7681260936460711,
+    "fresh": {
+      "SOFT": 0.3196012713489639,
+      "MEDIUM": 0.48220376651378194,
+      "HARD": 0.3961035218564378
+    },
+    "fresh_unweighted": {
+      "SOFT": 0.3735400555798641,
+      "MEDIUM": 0.4076654441081561,
+      "HARD": 0.3597390048492413
+    },
     "curve": {
       "SOFT": {
-        "2": 0.386,
-        "10": 0.928,
-        "20": 1.542,
-        "30": 2.315
+        "2": 0.374,
+        "10": 0.996,
+        "20": 1.619,
+        "30": 2.392
       },
       "MEDIUM": {
-        "2": 0.489,
-        "10": 0.935,
-        "20": 1.481,
-        "30": 1.945
+        "2": 0.408,
+        "10": 0.917,
+        "20": 1.483,
+        "30": 1.927
       },
       "HARD": {
-        "2": 0.406,
-        "10": 0.773,
-        "20": 1.246,
-        "30": 1.674
+        "2": 0.36,
+        "10": 0.771,
+        "20": 1.256,
+        "30": 1.711
       }
     }
   },
@@ -167,25 +183,25 @@
       "Position",
       "CircuitEncoded"
     ],
-    "n_rows": 26015,
-    "base_rate": 0.040092254468575825,
-    "log_loss": 0.08997097329517452,
-    "log_loss_constant": 0.1682372266641083,
-    "brier": 0.02458588861867155,
-    "roc_auc": 0.9456815986733521,
-    "pr_auc": 0.5719790512257007,
+    "n_rows": 25614,
+    "base_rate": 0.04029046615132349,
+    "log_loss": 0.0903073217371388,
+    "log_loss_constant": 0.16886616876277702,
+    "brier": 0.02478210390161871,
+    "roc_auc": 0.946431308217584,
+    "pr_auc": 0.5701844987644681,
     "sanity": {
       "closer gap \u2192 more likely": true,
       "fresher tyres \u2192 more likely": true,
       "Monaco harder to pass than Bahrain": true
     },
     "examples": {
-      "gap 0.4 s, equal tyres": 0.16512180864810944,
-      "gap 3.0 s, equal tyres": 0.000502693117596209,
-      "gap 0.6 s, 22 laps fresher": 0.782139778137207,
-      "gap 0.6 s, equal tyres (age 14)": 0.07091681659221649,
-      "Monaco, 0.6 s, 22 laps fresher": 0.43498310446739197,
-      "Bahrain, 0.6 s, 22 laps fresher": 0.909714937210083
+      "gap 0.4 s, equal tyres": 0.14133374392986298,
+      "gap 3.0 s, equal tyres": 0.0003412769001442939,
+      "gap 0.6 s, 22 laps fresher": 0.6868923902511597,
+      "gap 0.6 s, equal tyres (age 14)": 0.05817713215947151,
+      "Monaco, 0.6 s, 22 laps fresher": 0.33666637539863586,
+      "Bahrain, 0.6 s, 22 laps fresher": 0.8620378971099854
     }
   },
   "teams": [

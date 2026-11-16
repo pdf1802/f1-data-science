@@ -35,7 +35,7 @@ MIN_FOLLOW_GAP = 0.30     # s — can't cross the line closer than this behind a
 DIRTY_AIR_PENALTY = 0.20  # s/lap when within DRS_WINDOW of the car ahead
 PIT_NOISE_STD = 0.8       # s — stop-to-stop variation
 # s/lap — how far a driver's pace can drift from what has been seen so far. Calibrated on
-# 36 real races (tools/backtest.py): at 0.25 the simulated 10–90 % range contains the real
+# 35 real races (tools/backtest.py): at 0.25 the simulated 10–90 % range contains the real
 # finishing position 80.1 % of the time (calibrated); 0.12 gives 68 % (overconfident),
 # 0.40 gives 88 % (too cautious). The log score is best at 0.30 (−1.87 vs −1.90 at 0.25):
 # a small difference; we choose the value whose 80 % intervals mean 80 %.
