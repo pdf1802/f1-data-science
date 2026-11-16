@@ -39,8 +39,8 @@ python -m integrations.f1_race_replay.race_engineer_window --driver ALO
 end of the lap the leader has just completed (laps already completed stay real) and the **BOX → SOFT / MEDIUM /
 HARD** and **STAY OUT** buttons decide your driver's stops. You can also type `take`, `box ALO HARD` or
 `stay ALO` in the stream's terminal, or start with `--take-control 20` to hand over automatically after lap 20
-(the same race as pressing the button then — tested). The other cars follow the default plan the engineer
-assumes for them.
+(the same race as pressing the button then — tested). The other cars follow the plan the engineer assumes
+for them: the fastest way to the flag on a clear track at today's tyre degradation.
 
 **Track map** — the **TRACK MAP** button (or `--track`) opens the race drawn on the circuit, fed by the same
 stream; `python -m integrations.f1_race_replay.track_view --driver ALO` runs it on its own connection. With the
@@ -85,13 +85,18 @@ Options: `--circuit "Bahrain Grand Prix"`, `--sims 300` (Monte Carlo races per o
    last crossed the line, or when it has not moved for 20 s (not under a red flag). Counting the field's
    laps instead of seconds keeps everyone in through a red flag. FastF1's generated placeholder rows
    (`fastf1_generated`, e.g. where a car retired) are not line crossings.
-3. **Pace** — each driver's median racing lap so far, corrected for fuel and tyre state with Module 1.
-4. **Rivals' plans** — one more stop when their tyre reaches the age range the data covers (p90 age per
-   compound), or when the two-compound rule is still open; shown in the tower as *Next stop (assumed)*.
-5. **Options for our driver** — stay out (default plan), box now onto each legal compound, box in 3 laps,
+3. **How hard is today on tyres** — the circuit's usual degradation rate, updated with the clean laps run so
+   far (`tools/degradation.py::live_estimate`). Before the first stops it stays near the prior (wear and fuel
+   burn cannot be told apart yet); after them the race has most of the say. Shown under the call.
+4. **Pace** — each driver's median racing lap so far, corrected for fuel and tyre state with Module 1 at
+   today's degradation.
+5. **Plans** — every car, rivals and ours, gets the plan that is fastest to the flag on a clear track at today's
+   degradation: no, one or two more stops, every pit lap × compound, two-compound rule kept
+   (`optimal_plan`); shown in the tower as *Next stop (assumed)*.
+6. **Options for our driver** — stay out (current plan), box now onto each legal compound, box in 3 laps,
    no more stops — each raced to the flag **on the same random draws** (paired Monte Carlo, batched in
    one engine run). The headline only calls an option when its gain over staying out beats its 95 % CI.
-6. **Undercut alert** — Tool 1 against the car ahead when it is within 3 s.
+7. **Undercut alert** — Tool 1 against the car ahead when it is within 3 s.
 
 ### No future leakage
 
@@ -159,11 +164,12 @@ thread, and is skipped if PySide6 is not installed.
 
 ## Limitations
 
-- The engine's known biases apply: per-circuit degradation is compressed, so **one-stop strategies look
-  too good at abrasive tracks** ("NO MORE STOPS" early in Bahrain); no fuel effect between strategies
-  (mirror strategies cost the same); fresh MEDIUM vs HARD are hard to tell apart.
-- Rivals follow a simple default plan, not their real strategy — the call is "given what we assume
-  they do".
+- The engine's limits apply: a mild lean towards fewer stops remains (the Bahrain "NO MORE STOPS" case is
+  fixed since Module 1 V3.2: following Alonso in 2023 the plan is laps 15 and 36, the team stopped on 14 and
+  34); no fuel effect between strategies (mirror strategies cost the same); fresh MEDIUM vs HARD are hard to
+  tell apart.
+- Rivals follow their fastest clear-track plan, not their real strategy, and do not react to each other — the
+  call is "given what we assume they do".
 - Dry races only: on INTERMEDIATE / WET the window says so and makes no call.
 - Line times of cars behind are estimates. **Measured on the real f1-race-replay stream**
   (`python -m integrations.f1_race_replay.real_payloads`, one race: Bahrain 2023 following ALO, 701
