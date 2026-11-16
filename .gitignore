@@ -53,3 +53,4 @@ models/*.json
 
 # Evaluation reports are results, not artefacts: keep them in git so the README's numbers can be checked
 !models/*report*.json
+models/backup_*/
