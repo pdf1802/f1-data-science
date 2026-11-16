@@ -1,0 +1,31 @@
+name: tests
+
+on:
+  push:
+    branches: [main, dashboard-v1]
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    env:
+      QT_QPA_PLATFORM: offscreen          # the Race Engineer window is tested without a display
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: System libraries for Qt (offscreen)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libegl1 libgl1 libxkbcommon0 libdbus-1-3 libfontconfig1
+      - name: Install
+        run: pip install -r requirements-dev.txt
+      - name: Lint
+        run: ruff check .
+      # The suite builds small stand-in models with the real feature contracts (tests/conftest.py),
+      # so it needs neither the trained models nor the lap data.
+      - name: Tests
+        run: pytest -q

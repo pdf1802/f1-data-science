@@ -1,0 +1,39 @@
+[project]
+name = "f1-data-science"
+version = "3.2.0"
+description = "F1 race strategy from real lap data: tyre and overtaking models, a backtested lap-by-lap race engine, a Streamlit pit wall and a live Race Engineer."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "Paco (pdf1802)" }]
+
+[project.urls]
+Repository = "https://github.com/pdf1802/f1-data-science"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".", "tests"]
+addopts = "-q"
+filterwarnings = ["ignore::DeprecationWarning", "ignore::FutureWarning"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+extend-exclude = ["notebooks", "demo", "data", "models"]
+
+[tool.ruff.lint]
+# pyflakes + pycodestyle + the bugbear checks that catch real mistakes
+select = ["F", "E", "W", "B"]
+ignore = [
+    "E501",   # long lines are allowed where a table or a message reads better on one line
+    "E731",   # small lambdas are used on purpose for one-line formulas
+    "E741",   # l / L are lap counts throughout
+    "E701", "E702",  # compact one-liners in tests
+    "B008",   # default arguments that call a function (Streamlit / dataclasses idiom)
+    "B023",   # lambdas defined and used inside the same loop iteration
+    "B905",   # zip() without strict= (inputs are built to the same length)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E402"]
+"app.py" = ["E402"]
